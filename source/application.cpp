@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iostream>
 #include <cstring>
+#include <fstream>
 
 namespace application {
     struct Vertex {
@@ -54,6 +55,35 @@ namespace application {
         return indexes;
     }
 
+    VkShaderModule load_shader_module(const std::string &path) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open shader file" << path << "!\n";
+            return VK_NULL_HANDLE;
+        }
+
+        const size_t size = file.tellg();
+        std::vector<uint32_t> buffer(size / sizeof(uint32_t));
+
+        file.seekg(0);
+        file.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(size));
+        file.close();
+
+        VkShaderModuleCreateInfo info{
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = size,
+            .pCode = buffer.data()
+        };
+
+        VkShaderModule result;
+        if (vkCreateShaderModule(graphics::internal::context.device, &info, nullptr, &result) != VK_SUCCESS) {
+            std::cerr << "Failed to create shader module!\n";
+            return VK_NULL_HANDLE;
+        }
+
+        return result;
+    }
+
     namespace {
         constexpr int CONE_SEGMENTS = 24;
 
@@ -62,6 +92,9 @@ namespace application {
 
         VkBuffer vk_index_buffer = VK_NULL_HANDLE;
         VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
+
+        VkShaderModule vk_vertex_shader = VK_NULL_HANDLE;
+        VkShaderModule vk_fragment_shader = VK_NULL_HANDLE;
     }
 
     bool initialize() {
@@ -126,12 +159,26 @@ namespace application {
         std::memcpy(index_allocation_info.pMappedData, indexes.data(), sizeof(uint32_t) * indexes.size());
         std::cout << "Successfully created, allocated and mapped index buffer memory\n";
 
+        vk_vertex_shader = load_shader_module("../cone.vert.spv");
+        vk_fragment_shader = load_shader_module("../cone.frag.spv");
+        std::cout << "Shaders successfully loaded\n";
+
         return true;
     }
 
     void shutdown() {
         auto &context = graphics::internal::context;
         vkQueueWaitIdle(context.graphics_queue);
+
+        if (vk_vertex_shader != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(context.device, vk_vertex_shader, nullptr);
+            vk_vertex_shader = VK_NULL_HANDLE;
+        }
+
+        if (vk_fragment_shader != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(context.device, vk_fragment_shader, nullptr);
+            vk_fragment_shader = VK_NULL_HANDLE;
+        }
 
         if (vk_vertex_buffer != VK_NULL_HANDLE) {
             vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
