@@ -55,17 +55,19 @@ namespace application {
     }
 
     namespace {
-        constexpr int cone_segments = 24;
+        constexpr int CONE_SEGMENTS = 24;
 
-        VkBuffer vk_vertex_buffer;
-        VmaAllocation vk_vertex_buffer_allocation;
-        Vertex *vk_vertex_buffer_memory;
+        VkBuffer vk_vertex_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_vertex_buffer_allocation = VK_NULL_HANDLE;
+
+        VkBuffer vk_index_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
     }
 
     bool initialize() {
         auto &context = graphics::internal::context;
 
-        const auto vertexes = make_cone_vertexes(cone_segments);
+        const auto vertexes = make_cone_vertexes(CONE_SEGMENTS);
 
         const VkBufferCreateInfo vertex_buffer = {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -79,32 +81,69 @@ namespace application {
             .usage = VMA_MEMORY_USAGE_AUTO,
         };
 
+        VmaAllocationInfo vertex_allocation_info{};
         if (vmaCreateBuffer(
                 context.allocator,
                 &vertex_buffer,
                 &vertex_buffer_allocation,
                 &vk_vertex_buffer,
                 &vk_vertex_buffer_allocation,
-                nullptr
+                &vertex_allocation_info
             ) != VK_SUCCESS) {
             std::cerr << "Failed to create and allocate vertex buffer\n";
             return false;
         }
 
-        if (vmaMapMemory(
-                context.allocator, vk_vertex_buffer_allocation, reinterpret_cast<void **>(&vk_vertex_buffer_memory)
+        std::memcpy(vertex_allocation_info.pMappedData, vertexes.data(), sizeof(Vertex) * vertexes.size());
+        std::cout << "Successfully created, allocated and mapped vertex buffer memory\n";
+
+        const auto indexes = make_cone_indexes(CONE_SEGMENTS);
+        const VkBufferCreateInfo index_buffer = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = sizeof(uint32_t) * indexes.size(),
+            .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+
+        constexpr VmaAllocationCreateInfo index_buffer_allocation = {
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO,
+        };
+
+        VmaAllocationInfo index_allocation_info{};
+        if (vmaCreateBuffer(
+                context.allocator,
+                &index_buffer,
+                &index_buffer_allocation,
+                &vk_index_buffer,
+                &vk_index_buffer_allocation,
+                &index_allocation_info
             ) != VK_SUCCESS) {
-            std::cerr << "Failed to map vertex buffer memory\n";
+            std::cerr << "Failed to create and allocate index buffer\n";
             return false;
         }
 
-        memcpy(vk_vertex_buffer_memory, vertexes.data(), sizeof(Vertex) * vertexes.size());
+        std::memcpy(index_allocation_info.pMappedData, indexes.data(), sizeof(uint32_t) * indexes.size());
+        std::cout << "Successfully created, allocated and mapped index buffer memory\n";
+
         return true;
     }
 
     void shutdown() {
         auto &context = graphics::internal::context;
         vkQueueWaitIdle(context.graphics_queue);
+
+        if (vk_vertex_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
+            vk_vertex_buffer = VK_NULL_HANDLE;
+            vk_vertex_buffer_allocation = VK_NULL_HANDLE;
+        }
+
+        if (vk_index_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, vk_index_buffer, vk_index_buffer_allocation);
+            vk_index_buffer = VK_NULL_HANDLE;
+            vk_index_buffer_allocation = VK_NULL_HANDLE;
+        }
     }
 
     void update([[maybe_unused]] double time) {
