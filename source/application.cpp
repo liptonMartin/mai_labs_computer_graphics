@@ -4,6 +4,8 @@
 #include <vector>
 #include <numbers>
 #include <cmath>
+#include <iostream>
+#include <cstring>
 
 namespace application {
     struct Vertex {
@@ -52,7 +54,51 @@ namespace application {
         return indexes;
     }
 
+    namespace {
+        constexpr int cone_segments = 24;
+
+        VkBuffer vk_vertex_buffer;
+        VmaAllocation vk_vertex_buffer_allocation;
+        Vertex *vk_vertex_buffer_memory;
+    }
+
     bool initialize() {
+        auto &context = graphics::internal::context;
+
+        const auto vertexes = make_cone_vertexes(cone_segments);
+
+        const VkBufferCreateInfo vertex_buffer = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = sizeof(Vertex) * vertexes.size(),
+            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+
+        constexpr VmaAllocationCreateInfo vertex_buffer_allocation = {
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO,
+        };
+
+        if (vmaCreateBuffer(
+                context.allocator,
+                &vertex_buffer,
+                &vertex_buffer_allocation,
+                &vk_vertex_buffer,
+                &vk_vertex_buffer_allocation,
+                nullptr
+            ) != VK_SUCCESS) {
+            std::cerr << "Failed to create and allocate vertex buffer\n";
+            return false;
+        }
+
+        if (vmaMapMemory(
+                context.allocator, vk_vertex_buffer_allocation, reinterpret_cast<void **>(&vk_vertex_buffer_memory)
+            ) != VK_SUCCESS) {
+            std::cerr << "Failed to map vertex buffer memory\n";
+            return false;
+        }
+
+        memcpy(vk_vertex_buffer_memory, vertexes.data(), sizeof(Vertex) * vertexes.size());
         return true;
     }
 
