@@ -86,6 +86,7 @@ namespace application {
 
     namespace {
         constexpr int CONE_SEGMENTS = 24;
+        uint32_t vk_index_count = 0;
 
         VkBuffer vk_vertex_buffer = VK_NULL_HANDLE;
         VmaAllocation vk_vertex_buffer_allocation = VK_NULL_HANDLE;
@@ -134,6 +135,7 @@ namespace application {
         std::cout << "Successfully created, allocated and mapped vertex buffer memory\n";
 
         const auto indexes = make_cone_indexes(CONE_SEGMENTS);
+        vk_index_count = indexes.size();
         const VkBufferCreateInfo index_buffer = {
             .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             .size = sizeof(uint32_t) * indexes.size(),
@@ -214,7 +216,7 @@ namespace application {
 
         const VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
         };
 
         const VkPipelineViewportStateCreateInfo viewport_state_create_info = {
@@ -278,7 +280,7 @@ namespace application {
 
         const VkGraphicsPipelineCreateInfo graphics_pipeline_create_info = {
             .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .stageCount = sizeof(stages),
+            .stageCount = sizeof(stages) / sizeof(stages[0]),
             .pStages = stages,
             .pVertexInputState = &vertex_input_state_create_info,
             .pInputAssemblyState = &input_assembly_state_create_info,
@@ -351,6 +353,56 @@ namespace application {
     }
 
     void render(const graphics::internal::FrameData &fd) {
-        (void) fd;
+        auto &context = graphics::internal::context;
+
+        vkResetCommandBuffer(fd.command_buffer, 0);
+
+        const VkCommandBufferBeginInfo begin = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+
+        vkBeginCommandBuffer(fd.command_buffer, &begin);
+
+        const VkClearValue clear_values[] = {
+            {.color = {.float32 = {0.1, 0.1, 0.1, 0.1}}},
+            {.depthStencil = {0.1, 0}},
+        };
+
+        const VkRenderPassBeginInfo render_pass_begin_info = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .renderPass = context.render_pass,
+            .framebuffer = fd.framebuffer,
+            .renderArea = {.extent = context.swapchain_extent},
+            .clearValueCount = sizeof(clear_values) / sizeof(clear_values[0]),
+            .pClearValues = clear_values,
+        };
+
+        vkCmdBeginRenderPass(fd.command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+        const VkViewport viewport = {
+            .x = 0,
+            .y = 0,
+            .width = static_cast<float>(context.swapchain_extent.width),
+            .height = static_cast<float>(context.swapchain_extent.height),
+            .minDepth = 0,
+            .maxDepth = 1,
+        };
+
+        vkCmdSetViewport(fd.command_buffer, 0, 1, &viewport);
+
+        const VkRect2D scissor = {.extent = context.swapchain_extent};
+        vkCmdSetScissor(fd.command_buffer, 0, 1, &scissor);
+
+        vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_cone_pipeline);
+
+        const VkDeviceSize device_size = 0;
+        vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vk_vertex_buffer, &device_size);
+        vkCmdBindIndexBuffer(fd.command_buffer, vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        vkCmdDrawIndexed(fd.command_buffer, vk_index_count, 1, 0, 0, 0);
+
+        vkCmdEndRenderPass(fd.command_buffer);
+        vkEndCommandBuffer(fd.command_buffer);
     }
 } // namespace application
