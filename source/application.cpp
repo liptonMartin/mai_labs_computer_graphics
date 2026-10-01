@@ -366,7 +366,7 @@ namespace application {
 
         const VkClearValue clear_values[] = {
             {.color = {.float32 = {0.1, 0.1, 0.1, 0.1}}},
-            {.depthStencil = {0.1, 0}},
+            {.depthStencil = {1, 0}},
         };
 
         const VkRenderPassBeginInfo render_pass_begin_info = {
