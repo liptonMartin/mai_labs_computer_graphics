@@ -95,6 +95,9 @@ namespace application {
 
         VkShaderModule vk_vertex_shader = VK_NULL_HANDLE;
         VkShaderModule vk_fragment_shader = VK_NULL_HANDLE;
+
+        VkPipelineLayout vk_cone_layout = VK_NULL_HANDLE;
+        VkPipeline vk_cone_pipeline = VK_NULL_HANDLE;
     }
 
     bool initialize() {
@@ -163,12 +166,162 @@ namespace application {
         vk_fragment_shader = load_shader_module("../cone.frag.spv");
         std::cout << "Shaders successfully loaded\n";
 
+        const VkPipelineShaderStageCreateInfo stages[] = {
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                .module = vk_vertex_shader,
+                .pName = "main",
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .module = vk_fragment_shader,
+                .pName = "main",
+            },
+        };
+
+        const VkVertexInputBindingDescription vertex_bindings[1] = {
+            {
+                .binding = 0,
+                .stride = sizeof(Vertex),
+                .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+            },
+        };
+
+        const VkVertexInputAttributeDescription vertex_attributes[2] = {
+            {
+                .location = 0,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = offsetof(Vertex, pos),
+            },
+            {
+                .location = 1,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = offsetof(Vertex, color)
+            }
+        };
+
+        const VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .vertexBindingDescriptionCount = sizeof(vertex_bindings) / sizeof(vertex_bindings[0]),
+            .pVertexBindingDescriptions = vertex_bindings,
+            .vertexAttributeDescriptionCount = sizeof(vertex_attributes) / sizeof(vertex_attributes[0]),
+            .pVertexAttributeDescriptions = vertex_attributes,
+        };
+
+        const VkPipelineInputAssemblyStateCreateInfo input_assembly_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+        };
+
+        const VkPipelineViewportStateCreateInfo viewport_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1,
+            .scissorCount = 1,
+        };
+
+        const VkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_NONE,
+            .frontFace = VK_FRONT_FACE_CLOCKWISE,
+            .lineWidth = 1,
+        };
+
+        const VkPipelineMultisampleStateCreateInfo multisample_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+        };
+
+        const VkPipelineDepthStencilStateCreateInfo depth_stencil_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .depthTestEnable = VK_TRUE,
+            .depthWriteEnable = VK_TRUE,
+            .depthCompareOp = VK_COMPARE_OP_LESS,
+        };
+
+        const VkPipelineColorBlendAttachmentState color_blend_attachment_state = {
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                              VK_COLOR_COMPONENT_G_BIT |
+                              VK_COLOR_COMPONENT_B_BIT |
+                              VK_COLOR_COMPONENT_A_BIT
+        };
+
+        const VkPipelineColorBlendStateCreateInfo color_blend_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1,
+            .pAttachments = &color_blend_attachment_state,
+        };
+
+        const VkDynamicState dynamic_states[] = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
+        };
+
+        const VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = 2,
+            .pDynamicStates = dynamic_states,
+        };
+
+        const VkPipelineLayoutCreateInfo layout_create_info = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+        };
+
+        if (vkCreatePipelineLayout(context.device, &layout_create_info, nullptr, &vk_cone_layout) != VK_SUCCESS) {
+            std::cerr << "Failed to create pipeline layout!\n";
+            return false;
+        }
+
+        const VkGraphicsPipelineCreateInfo graphics_pipeline_create_info = {
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .stageCount = sizeof(stages),
+            .pStages = stages,
+            .pVertexInputState = &vertex_input_state_create_info,
+            .pInputAssemblyState = &input_assembly_state_create_info,
+            .pViewportState = &viewport_state_create_info,
+            .pRasterizationState = &rasterization_state_create_info,
+            .pMultisampleState = &multisample_state_create_info,
+            .pDepthStencilState = &depth_stencil_state_create_info,
+            .pColorBlendState = &color_blend_state_create_info,
+            .pDynamicState = &dynamic_state_create_info,
+            .layout = vk_cone_layout,
+            .renderPass = context.render_pass,
+            .subpass = 0,
+        };
+
+        if (vkCreateGraphicsPipelines(
+                context.device,
+                VK_NULL_HANDLE,
+                1,
+                &graphics_pipeline_create_info,
+                nullptr,
+                &vk_cone_pipeline
+            ) != VK_SUCCESS) {
+            std::cerr << "Failed to create graphics pipeline\n";
+            return false;
+        }
+
+        std::cout << "Pipeline created\n";
         return true;
     }
 
     void shutdown() {
         auto &context = graphics::internal::context;
         vkQueueWaitIdle(context.graphics_queue);
+
+        if (vk_cone_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(context.device, vk_cone_pipeline, nullptr);
+            vk_cone_pipeline = VK_NULL_HANDLE;
+        }
+
+        if (vk_cone_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(context.device, vk_cone_layout, nullptr);
+            vk_cone_layout = VK_NULL_HANDLE;
+        }
 
         if (vk_vertex_shader != VK_NULL_HANDLE) {
             vkDestroyShaderModule(context.device, vk_vertex_shader, nullptr);
