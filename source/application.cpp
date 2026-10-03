@@ -114,6 +114,13 @@ namespace application {
         VkDescriptorSetLayout vk_descriptor_set_layout = VK_NULL_HANDLE;
         VkDescriptorPool vk_descriptor_pool = VK_NULL_HANDLE;
         VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
+
+        bool ui_use_perspective = true;
+        float ui_fov_deg = 60; // угол обзора по вертикали
+        float ui_ortho_size = 1.5;
+        float ui_position[3] = {0, 0, 0};
+        float ui_rotation[3] = {0, 0, 0}; // в градусах
+        float ui_scale[3] = {1, 1, 1};
     }
 
     bool initialize() {
@@ -479,30 +486,57 @@ namespace application {
         }
     }
 
-    void update(const double time) {
+    void update([[maybe_unused]] double time) {
         ImGui::ShowDemoWindow();
 
-        const float aspect = static_cast<float>(graphics::internal::context.swapchain_extent.width) /
-                             static_cast<float>(graphics::internal::context.swapchain_extent.height);
+        ImGui::Begin("Controls");
 
-        // медленное вращение вокруг Y
-        const float angle = static_cast<float>(time) * 0.8f;
-        const math::Mat4 model = math::Mat4::rotate_y(angle);
+        ImGui::Checkbox("Perspective projection", &ui_use_perspective);
 
-        // Камера смотрит в начало координат.
+        if (ui_use_perspective) {
+            ImGui::SliderFloat("FOV (deg)", &ui_fov_deg, 10, 120);
+        } else {
+            ImGui::SliderFloat("Ortho half-height", &ui_ortho_size, 0.5, 10);
+        }
+
+        ImGui::SliderFloat3("Position", ui_position, -5, 5);
+        ImGui::SliderFloat3("Rotation (deg)", ui_rotation, -180, 180);
+        ImGui::SliderFloat3("Scale", ui_scale, 0.1, 5);
+
+        ImGui::End();
+
+        auto &ctx = graphics::internal::context;
+
+        const auto w = static_cast<float>(ctx.swapchain_extent.width);
+        const auto h = static_cast<float>(ctx.swapchain_extent.height);
+        if (w == 0 || h == 0) return;
+        const float aspect = w / h;
+
+        constexpr float deg2rad = std::numbers::pi / 180;
+
+        const math::Mat4 model =
+                math::Mat4::translate(ui_position[0], ui_position[1], ui_position[2])
+                * math::Mat4::rotate_y(ui_rotation[1] * deg2rad)
+                * math::Mat4::rotate_x(ui_rotation[0] * deg2rad)
+                * math::Mat4::rotate_z(ui_rotation[2] * deg2rad)
+                * math::Mat4::scale(ui_scale[0], ui_scale[1], ui_scale[2]);
+
         const math::Mat4 view = math::Mat4::lookAt(
-            {0.0f, 0.0f, 4.0f},
-            {0.0f, 0.0f, 0.0f},
-            {0.0f, 1.0f, 0.0f}
+            {0, 0, 4},
+            {0, 0, 0},
+            {0, 1, 0}
         );
 
-        // Перспектива: 60° по вертикали.
-        const math::Mat4 proj = math::Mat4::perspective(
-            60.0f * 3.1415926535f / 180.0f,
-            aspect,
-            0.1f,
-            100.0f
-        );
+        math::Mat4 proj;
+        if (ui_use_perspective) {
+            proj = math::Mat4::perspective(ui_fov_deg * deg2rad, aspect, 0.1, 100);
+        } else {
+            const float half_h = ui_ortho_size;
+            const float half_w = half_h * aspect;
+            // top = -half_h, bottom = +half_h — это даёт тот же Y-flip,
+            // что и в perspective (потому что ortho у нас не флипает сам)
+            proj = math::Mat4::ortho(-half_w, half_w, half_h, -half_h, 0.1, 100);
+        }
 
         vk_global_uniform_memory->model = model;
         vk_global_uniform_memory->view = view;
