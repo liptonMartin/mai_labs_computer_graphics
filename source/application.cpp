@@ -1,4 +1,5 @@
 #include "application.hpp"
+#include "math.hpp"
 
 #include <imgui.h>
 #include <vector>
@@ -9,6 +10,12 @@
 #include <fstream>
 
 namespace application {
+    struct GlobalUniforms {
+        math::Mat4 model;
+        math::Mat4 view;
+        math::Mat4 proj;
+    };
+
     struct Vertex {
         float pos[3];
         float color[3];
@@ -18,8 +25,8 @@ namespace application {
         std::vector<Vertex> array;
         array.reserve(n + 2);
 
-        Vertex apex{{0, -0.8, 0}, {1, 0, 0}};
-        Vertex center{{0, 0.5, 0}, {0, 1, 0}};
+        Vertex apex{{0, 1, 0}, {1, 0, 0}};
+        Vertex center{{0, -1, 0}, {0, 1, 0}};
         array.push_back(apex);
 
         constexpr float radius = 0.6;
@@ -28,7 +35,7 @@ namespace application {
             const float corner = static_cast<float>(i) * step;
 
             const float x = std::cos(corner) * radius;
-            const float y = 0.5;
+            const float y = -1;
             const float z = std::sin(corner) * radius;
 
             Vertex vertex{{x, y, z}, {0, 0, 1}};
@@ -99,6 +106,14 @@ namespace application {
 
         VkPipelineLayout vk_cone_layout = VK_NULL_HANDLE;
         VkPipeline vk_cone_pipeline = VK_NULL_HANDLE;
+
+        VkBuffer vk_global_uniform_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
+        GlobalUniforms *vk_global_uniform_memory = nullptr;
+
+        VkDescriptorSetLayout vk_descriptor_set_layout = VK_NULL_HANDLE;
+        VkDescriptorPool vk_descriptor_pool = VK_NULL_HANDLE;
+        VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
     }
 
     bool initialize() {
@@ -269,8 +284,59 @@ namespace application {
             .pDynamicStates = dynamic_states,
         };
 
+        const VkDescriptorSetLayoutBinding descriptor_binding = {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        };
+
+        const VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = 1,
+            .pBindings = &descriptor_binding,
+        };
+
+        if (vkCreateDescriptorSetLayout(
+                context.device,
+                &descriptor_set_layout_info,
+                nullptr,
+                &vk_descriptor_set_layout
+            ) != VK_SUCCESS) {
+            std::cerr << "Failed to create descriptor set layout\n";
+            return false;
+        }
+
+        const VkBufferCreateInfo uniform_buffer_info = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = sizeof(GlobalUniforms),
+            .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        };
+
+        constexpr VmaAllocationCreateInfo uniform_buffer_allocation = {
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO,
+        };
+
+        VmaAllocationInfo uniform_allocation_info{};
+        if (vmaCreateBuffer(
+                context.allocator,
+                &uniform_buffer_info,
+                &uniform_buffer_allocation,
+                &vk_global_uniform_buffer,
+                &vk_global_uniform_buffer_allocation,
+                &uniform_allocation_info
+            ) != VK_SUCCESS) {
+            std::cerr << "Failed to create uniform buffer\n";
+            return false;
+        }
+        vk_global_uniform_memory = static_cast<GlobalUniforms *>(uniform_allocation_info.pMappedData);
+
         const VkPipelineLayoutCreateInfo layout_create_info = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = 1,
+            .pSetLayouts = &vk_descriptor_set_layout,
         };
 
         if (vkCreatePipelineLayout(context.device, &layout_create_info, nullptr, &vk_cone_layout) != VK_SUCCESS) {
@@ -308,6 +374,53 @@ namespace application {
         }
 
         std::cout << "Pipeline created\n";
+
+        const VkDescriptorPoolSize descriptor_pool_size = {
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+        };
+
+        const VkDescriptorPoolCreateInfo descriptor_pool_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1,
+            .poolSizeCount = 1,
+            .pPoolSizes = &descriptor_pool_size,
+        };
+
+        if (vkCreateDescriptorPool(context.device, &descriptor_pool_info, nullptr, &vk_descriptor_pool) != VK_SUCCESS) {
+            std::cerr << "Failed to create descriptor pool\n";
+            return false;
+        }
+
+
+        const VkDescriptorSetAllocateInfo descriptor_set_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = vk_descriptor_pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &vk_descriptor_set_layout,
+        };
+
+        if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_descriptor_set) != VK_SUCCESS) {
+            std::cerr << "Failed to allocate descriptor set\n";
+            return false;
+        }
+
+        const VkDescriptorBufferInfo descriptor_buffer_info = {
+            .buffer = vk_global_uniform_buffer,
+            .offset = 0,
+            .range = sizeof(GlobalUniforms),
+        };
+
+        const VkWriteDescriptorSet descriptor_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = vk_descriptor_set,
+            .dstBinding = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo = &descriptor_buffer_info,
+        };
+
+        vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
         return true;
     }
 
@@ -335,6 +448,24 @@ namespace application {
             vk_fragment_shader = VK_NULL_HANDLE;
         }
 
+        if (vk_descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(context.device, vk_descriptor_pool, nullptr);
+            vk_descriptor_pool = VK_NULL_HANDLE;
+            vk_descriptor_set = VK_NULL_HANDLE;
+        }
+
+        if (vk_descriptor_set_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(context.device, vk_descriptor_set_layout, nullptr);
+            vk_descriptor_set_layout = VK_NULL_HANDLE;
+        }
+
+        if (vk_global_uniform_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, vk_global_uniform_buffer, vk_global_uniform_buffer_allocation);
+            vk_global_uniform_buffer = VK_NULL_HANDLE;
+            vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
+            vk_global_uniform_memory = nullptr;
+        }
+
         if (vk_vertex_buffer != VK_NULL_HANDLE) {
             vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
             vk_vertex_buffer = VK_NULL_HANDLE;
@@ -348,8 +479,34 @@ namespace application {
         }
     }
 
-    void update([[maybe_unused]] double time) {
+    void update(const double time) {
         ImGui::ShowDemoWindow();
+
+        const float aspect = static_cast<float>(graphics::internal::context.swapchain_extent.width) /
+                             static_cast<float>(graphics::internal::context.swapchain_extent.height);
+
+        // медленное вращение вокруг Y
+        const float angle = static_cast<float>(time) * 0.8f;
+        const math::Mat4 model = math::Mat4::rotate_y(angle);
+
+        // Камера смотрит в начало координат.
+        const math::Mat4 view = math::Mat4::lookAt(
+            {0.0f, 0.0f, 4.0f},
+            {0.0f, 0.0f, 0.0f},
+            {0.0f, 1.0f, 0.0f}
+        );
+
+        // Перспектива: 60° по вертикали.
+        const math::Mat4 proj = math::Mat4::perspective(
+            60.0f * 3.1415926535f / 180.0f,
+            aspect,
+            0.1f,
+            100.0f
+        );
+
+        vk_global_uniform_memory->model = model;
+        vk_global_uniform_memory->view = view;
+        vk_global_uniform_memory->proj = proj;
     }
 
     void render(const graphics::internal::FrameData &fd) {
@@ -393,6 +550,17 @@ namespace application {
 
         const VkRect2D scissor = {.extent = context.swapchain_extent};
         vkCmdSetScissor(fd.command_buffer, 0, 1, &scissor);
+
+        vkCmdBindDescriptorSets(
+            fd.command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            vk_cone_layout,
+            0,
+            1,
+            &vk_descriptor_set,
+            0,
+            nullptr
+        );
 
         vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_cone_pipeline);
 
