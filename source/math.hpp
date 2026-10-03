@@ -1,0 +1,8 @@
+﻿//
+// Created by rvova on 03.10.2026.
+//
+
+#ifndef VULKAN_STARTER_APP_MATH_HPP
+#define VULKAN_STARTER_APP_MATH_HPP
+
+#endif //VULKAN_STARTER_APP_MATH_HPP

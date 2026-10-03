@@ -164,8 +164,8 @@ namespace application {
         std::memcpy(index_allocation_info.pMappedData, indexes.data(), sizeof(uint32_t) * indexes.size());
         std::cout << "Successfully created, allocated and mapped index buffer memory\n";
 
-        vk_vertex_shader = load_shader_module("../cone.vert.spv");
-        vk_fragment_shader = load_shader_module("../cone.frag.spv");
+        vk_vertex_shader = load_shader_module("../shaders/cone.vert.spv");
+        vk_fragment_shader = load_shader_module("../shaders/cone.frag.spv");
         std::cout << "Shaders successfully loaded\n";
 
         const VkPipelineShaderStageCreateInfo stages[] = {
