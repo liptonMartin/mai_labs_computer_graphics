@@ -1,6 +1,7 @@
 #include "application.hpp"
 #include "math.hpp"
 
+#include <array>
 #include <imgui.h>
 #include <vector>
 #include <numbers>
@@ -14,6 +15,7 @@ namespace application {
         math::Mat4 model;
         math::Mat4 view;
         math::Mat4 proj;
+        float color[4]{};
     };
 
     struct Vertex {
@@ -21,31 +23,47 @@ namespace application {
         float color[3];
     };
 
-    static std::vector<Vertex> make_cone_vertexes(int n) {
+    std::array<float, 3> color_from_pos(float x, float y, float z) {
+        return {
+            x * 0.5f + 0.5f,
+            y * 0.5f + 0.5f,
+            z * 0.5f + 0.5f,
+        };
+    }
+
+    std::vector<Vertex> make_cone_vertexes(const int n) {
         std::vector<Vertex> array;
         array.reserve(n + 2);
 
-        Vertex apex{{0, 1, 0}, {1, 0, 0}};
-        Vertex center{{0, -1, 0}, {0, 1, 0}};
-        array.push_back(apex);
-
+        constexpr float apex_y = 1;
+        constexpr float base_y = -1;
         constexpr float radius = 0.6;
+
+        {
+            const auto color = color_from_pos(0, apex_y, 0);
+            array.push_back(Vertex{{0, apex_y, 0}, {color[0], color[1], color[2]}});
+        }
+
         for (int i = 0; i < n; ++i) {
             const float step = 2 * std::numbers::pi_v<float> / static_cast<float>(n);
             const float corner = static_cast<float>(i) * step;
 
             const float x = std::cos(corner) * radius;
-            const float y = -1;
             const float z = std::sin(corner) * radius;
 
-            Vertex vertex{{x, y, z}, {0, 0, 1}};
-            array.push_back(vertex);
+            const auto color = color_from_pos(x, base_y, z);
+            array.push_back(Vertex{{x, base_y, z}, {color[0], color[1], color[2]}});
         }
-        array.push_back(center);
+
+        {
+            const auto color = color_from_pos(0, base_y, 0);
+            array.push_back(Vertex{{0, base_y, 0}, {color[0], color[1], color[2]}});
+        }
+
         return array;
     }
 
-    static std::vector<uint32_t> make_cone_indexes(int n) {
+    std::vector<uint32_t> make_cone_indexes(int n) {
         std::vector<uint32_t> indexes;
         indexes.reserve(n * 6);
 
@@ -127,6 +145,8 @@ namespace application {
         float ui_path_radius = 2;
         float ui_path_height = 0.6; // амплитуда по Y
         float ui_anim_time = 0;
+
+        float ui_color[3] = {1.0f, 1.0f, 1.0f};
     }
 
     bool initialize() {
@@ -524,6 +544,9 @@ namespace application {
         ImGui::SliderFloat3("Rotation (deg)", ui_rotation, -180, 180);
         ImGui::SliderFloat3("Scale", ui_scale, 0.1, 5);
 
+        ImGui::Separator();
+        ImGui::ColorEdit3("Object color", ui_color);
+
         ImGui::End();
 
         if (ui_playing) {
@@ -584,6 +607,11 @@ namespace application {
         vk_global_uniform_memory->model = model;
         vk_global_uniform_memory->view = view;
         vk_global_uniform_memory->proj = proj;
+
+        vk_global_uniform_memory->color[0] = ui_color[0];
+        vk_global_uniform_memory->color[1] = ui_color[1];
+        vk_global_uniform_memory->color[2] = ui_color[2];
+        vk_global_uniform_memory->color[3] = 1;
     }
 
     void render(const graphics::internal::FrameData &fd) {
