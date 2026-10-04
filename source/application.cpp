@@ -236,14 +236,14 @@ namespace application {
         array.reserve(8);
 
         array = {
-            {{0.5, 0.5, 0.5}, {1, 0, 0}},
-            {{0.5, 0.5, -0.5}, {1, 0, 0}},
-            {{-0.5, 0.5, 0.5}, {1, 0, 0}},
-            {{-0.5, 0.5, -0.5}, {1, 0, 0}},
-            {{0.5, -0.5, 0.5}, {0, 1, 0}},
-            {{0.5, -0.5, -0.5}, {0, 1, 0}},
-            {{-0.5, -0.5, 0.5}, {0, 1, 0}},
-            {{-0.5, -0.5, -0.5}, {0, 1, 0}},
+            {{0.3, 0.3, 0.3}, {1, 0, 0}},
+            {{0.3, 0.3, -0.3}, {1, 0, 0}},
+            {{-0.3, 0.3, 0.3}, {1, 0, 0}},
+            {{-0.3, 0.3, -0.3}, {1, 0, 0}},
+            {{0.3, -0.3, 0.3}, {0, 1, 0}},
+            {{0.3, -0.3, -0.3}, {0, 1, 0}},
+            {{-0.3, -0.3, 0.3}, {0, 1, 0}},
+            {{-0.3, -0.3, -0.3}, {0, 1, 0}},
         };
 
         return array;
@@ -254,15 +254,31 @@ namespace application {
         indexes.reserve(6 * 2 * 3); // 6 граней, 2 треугольника, 3 вершины в каждом треугольнике
 
         indexes = {
-            0, 1, 2, 1, 2, 3, // нижняя грань
-            0, 4, 1, 4, 1, 5, // передняя грань
-            1, 5, 3, 5, 3, 6, // правая грань
-            3, 2, 6, 2, 6, 7, // задняя грань
-            2, 0, 4, 0, 4, 7, // левая грань
-            4, 7, 5, 7, 5, 6, // верхняя грань
+            0, 1, 2, 1, 3, 2, // нижняя грань
+            0, 4, 1, 5, 1, 4, // передняя грань
+            1, 5, 3, 5, 7, 3, // правая грань
+            3, 7, 2, 2, 7, 6, // задняя грань
+            0, 2, 4, 2, 6, 4, // левая грань
+            4, 7, 5, 4, 6, 7, // верхняя грань
         };
 
         return indexes;
+    }
+
+    math::Vec3 create_animated_position_cone(const float time, const float radius, const float y_amplitude) {
+        const float px = radius * std::sin(time);
+        const float pz = radius * std::sin(time) * std::cos(time) * 2;
+        const float py = y_amplitude * std::sin(time * 2);
+
+        return {px, py, pz};
+    }
+
+    math::Vec3 create_animated_position_cube(const float time, const float radius) {
+        const float px = radius * std::sin(time);
+        const float pz = radius * std::cos(time);
+        const float py = 0;
+
+        return {px, py, pz};
     }
 
     VkShaderModule load_shader_module(const std::string &path) {
@@ -408,7 +424,7 @@ namespace application {
         const VkPipelineRasterizationStateCreateInfo rasterization_state_create_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_NONE,
+            .cullMode = VK_CULL_MODE_BACK_BIT,
             .frontFace = VK_FRONT_FACE_CLOCKWISE,
             .lineWidth = 1,
         };
@@ -649,18 +665,17 @@ namespace application {
         const float r = ui_path_radius;
         const float y_amp = ui_path_height;
 
-        const float px = r * std::sin(t);
-        const float pz = r * std::sin(t) * std::cos(t) * 2;
-        const float py = y_amp * std::sin(t * 2);
+        const auto animated_pos_cone = create_animated_position_cone(t, r, y_amp);
+        const auto pos_cube = create_animated_position_cube(t, r);
 
-        const math::Vec3 animated_pos{px, py, pz};
-
-        const math::Vec3 pos = ui_playing ? animated_pos : math::Vec3{ui_position[0], ui_position[1], ui_position[2]};
+        const math::Vec3 pos_cone = ui_playing
+                                        ? animated_pos_cone
+                                        : math::Vec3{ui_position[0], ui_position[1], ui_position[2]};
 
         if (ui_playing) {
-            ui_position[0] = pos.x;
-            ui_position[1] = pos.y;
-            ui_position[2] = pos.z;
+            ui_position[0] = pos_cone.x;
+            ui_position[1] = pos_cone.y;
+            ui_position[2] = pos_cone.z;
         }
 
         const auto &ctx = graphics::internal::context;
@@ -672,12 +687,14 @@ namespace application {
 
         constexpr auto deg2rad = std::numbers::pi_v<float> / 180;
 
-        const math::Mat4 model =
-                math::Mat4::translate(pos.x, pos.y, pos.z)
+        const math::Mat4 cone_model =
+                math::Mat4::translate(pos_cone.x, pos_cone.y, pos_cone.z)
                 * math::Mat4::rotate_y(ui_rotation[1] * deg2rad)
                 * math::Mat4::rotate_x(ui_rotation[0] * deg2rad)
                 * math::Mat4::rotate_z(ui_rotation[2] * deg2rad)
                 * math::Mat4::scale(ui_scale[0], ui_scale[1], ui_scale[2]);
+
+        const math::Mat4 cube_model = math::Mat4::translate(pos_cube.x, pos_cube.y, pos_cube.z);
 
         const math::Mat4 view = math::Mat4::lookAt(
             {0, 0, 4},
@@ -699,11 +716,11 @@ namespace application {
         auto &cone_uniform_memory = objects[Figure::Cone].vk_global_uniform_memory;
         auto &cube_uniform_memory = objects[Figure::Cube].vk_global_uniform_memory;
 
-        cone_uniform_memory->model = model;
+        cone_uniform_memory->model = cone_model;
         cone_uniform_memory->view = view;
         cone_uniform_memory->proj = proj;
 
-        cube_uniform_memory->model = model;
+        cube_uniform_memory->model = cube_model;
         cube_uniform_memory->view = view;
         cube_uniform_memory->proj = proj;
 
