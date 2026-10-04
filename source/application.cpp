@@ -121,6 +121,12 @@ namespace application {
         float ui_position[3] = {0, 0, 0};
         float ui_rotation[3] = {0, 0, 0}; // в градусах
         float ui_scale[3] = {1, 1, 1};
+
+        bool ui_playing = false;
+        float ui_anim_speed = 1;
+        float ui_path_radius = 2;
+        float ui_path_height = 0.6; // амплитуда по Y
+        float ui_anim_time = 0;
     }
 
     bool initialize() {
@@ -486,36 +492,73 @@ namespace application {
         }
     }
 
-    void update([[maybe_unused]] double time) {
+    void update(const double time) {
         ImGui::ShowDemoWindow();
+
+        static double last_time = 0;
+        const auto delta_time = time - last_time;
+        last_time = time;
 
         ImGui::Begin("Controls");
 
         ImGui::Checkbox("Perspective projection", &ui_use_perspective);
-
         if (ui_use_perspective) {
             ImGui::SliderFloat("FOV (deg)", &ui_fov_deg, 10, 120);
         } else {
             ImGui::SliderFloat("Ortho half-height", &ui_ortho_size, 0.5, 10);
         }
 
+        ImGui::Separator();
+
+        ImGui::Checkbox("Play animation", &ui_playing);
+        ImGui::SliderFloat("Speed", &ui_anim_speed, 0, 5);
+        ImGui::SliderFloat("Path radius", &ui_path_radius, 0, 5);
+        ImGui::SliderFloat("Path height", &ui_path_height, 0, 2);
+
+        ImGui::Separator();
+
+        ImGui::BeginDisabled(ui_playing);
         ImGui::SliderFloat3("Position", ui_position, -5, 5);
+        ImGui::EndDisabled();
+
         ImGui::SliderFloat3("Rotation (deg)", ui_rotation, -180, 180);
         ImGui::SliderFloat3("Scale", ui_scale, 0.1, 5);
 
         ImGui::End();
 
-        auto &ctx = graphics::internal::context;
+        if (ui_playing) {
+            ui_anim_time += static_cast<float>(delta_time) * ui_anim_speed;
+        }
+
+        const float t = ui_anim_time;
+        const float r = ui_path_radius;
+        const float y_amp = ui_path_height;
+
+        const float px = r * std::sin(t);
+        const float pz = r * std::sin(t) * std::cos(t) * 2;
+        const float py = y_amp * std::sin(t * 2);
+
+        const math::Vec3 animated_pos{px, py, pz};
+
+        const math::Vec3 pos = ui_playing ? animated_pos : math::Vec3{ui_position[0], ui_position[1], ui_position[2]};
+
+        if (ui_playing) {
+            ui_position[0] = pos.x;
+            ui_position[1] = pos.y;
+            ui_position[2] = pos.z;
+        }
+
+        const auto &ctx = graphics::internal::context;
 
         const auto w = static_cast<float>(ctx.swapchain_extent.width);
         const auto h = static_cast<float>(ctx.swapchain_extent.height);
         if (w == 0 || h == 0) return;
         const float aspect = w / h;
 
-        constexpr float deg2rad = std::numbers::pi / 180;
+        constexpr auto deg2rad = std::numbers::pi_v<float> / 180;
 
         const math::Mat4 model =
-                math::Mat4::translate(ui_position[0], ui_position[1], ui_position[2])
+                math::Mat4::translate(pos.x, pos.y, pos.z)
                 * math::Mat4::rotate_y(ui_rotation[1] * deg2rad)
                 * math::Mat4::rotate_x(ui_rotation[0] * deg2rad)
                 * math::Mat4::rotate_z(ui_rotation[2] * deg2rad)
