@@ -9,8 +9,15 @@
 #include <iostream>
 #include <cstring>
 #include <fstream>
+#include <map>
+#include <ranges>
 
 namespace application {
+    enum class Figure {
+        Cube,
+        Cone,
+    };
+
     struct GlobalUniforms {
         math::Mat4 model;
         math::Mat4 view;
@@ -290,7 +297,7 @@ namespace application {
     namespace {
         constexpr int CONE_SEGMENTS = 24;
 
-        std::vector<Object> objects{};
+        std::map<Figure, Object> objects{};
 
         VkShaderModule vk_vertex_shader = VK_NULL_HANDLE;
         VkShaderModule vk_fragment_shader = VK_NULL_HANDLE;
@@ -334,8 +341,8 @@ namespace application {
         if (!cube.create_vertex_and_index_buffers(context, cube_vertexes, cube_indexes))
             return false;
 
-        objects.push_back(cone);
-        objects.push_back(cube);
+        objects[Figure::Cone] = cone;
+        objects[Figure::Cube] = cube;
 
         vk_vertex_shader = load_shader_module("../shaders/cone.vert.spv");
         vk_fragment_shader = load_shader_module("../shaders/cone.frag.spv");
@@ -524,7 +531,7 @@ namespace application {
             return false;
         }
 
-        for (auto &object: objects) {
+        for (auto &object: objects | std::views::values) {
             if (!object.update_descriptor_sets(context, vk_descriptor_pool, vk_descriptor_set_layout))
                 return false;
         }
@@ -560,7 +567,7 @@ namespace application {
             vkDestroyDescriptorPool(context.device, vk_descriptor_pool, nullptr);
             vk_descriptor_pool = VK_NULL_HANDLE;
 
-            for (auto &object: objects)
+            for (auto &object: objects | std::views::values)
                 object.vk_descriptor_set = VK_NULL_HANDLE;
         }
 
@@ -569,7 +576,7 @@ namespace application {
             vk_descriptor_set_layout = VK_NULL_HANDLE;
         }
 
-        for (auto &object: objects) {
+        for (auto &object: objects | std::views::values) {
             if (object.vk_global_uniform_buffer != VK_NULL_HANDLE) {
                 vmaDestroyBuffer(
                     context.allocator,
@@ -582,7 +589,7 @@ namespace application {
             }
         }
 
-        for (auto &object: objects) {
+        for (auto &object: objects | std::views::values) {
             if (object.vk_vertex_buffer != VK_NULL_HANDLE) {
                 vmaDestroyBuffer(context.allocator, object.vk_vertex_buffer, object.vk_vertex_buffer_allocation);
                 object.vk_vertex_buffer = VK_NULL_HANDLE;
@@ -689,8 +696,8 @@ namespace application {
             proj = math::Mat4::ortho(-half_w, half_w, half_h, -half_h, 0.1, 100);
         }
 
-        auto &cone_uniform_memory = objects[0].vk_global_uniform_memory;
-        auto &cube_uniform_memory = objects[1].vk_global_uniform_memory;
+        auto &cone_uniform_memory = objects[Figure::Cone].vk_global_uniform_memory;
+        auto &cube_uniform_memory = objects[Figure::Cube].vk_global_uniform_memory;
 
         cone_uniform_memory->model = model;
         cone_uniform_memory->view = view;
@@ -755,7 +762,7 @@ namespace application {
 
         vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_cone_pipeline);
 
-        for (const auto &object: objects) {
+        for (const auto &object: objects | std::views::values) {
             const VkDeviceSize device_size = 0;
             vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &object.vk_vertex_buffer, &device_size);
             vkCmdBindIndexBuffer(fd.command_buffer, object.vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
