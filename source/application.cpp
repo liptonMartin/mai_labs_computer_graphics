@@ -320,14 +320,22 @@ namespace application {
     bool initialize() {
         auto &context = graphics::internal::context;
 
-        const auto vertexes = make_cone_vertexes(CONE_SEGMENTS);
-        const auto indexes = make_cone_indexes(CONE_SEGMENTS);
+        const auto cone_vertexes = make_cone_vertexes(CONE_SEGMENTS);
+        const auto cone_indexes = make_cone_indexes(CONE_SEGMENTS);
+
+        const auto cube_vertexes = make_cube_vertexes();
+        const auto cube_indexes = make_cube_indexes();
 
         auto cone = Object();
-        if (!cone.create_vertex_and_index_buffers(context, vertexes, indexes))
+        if (!cone.create_vertex_and_index_buffers(context, cone_vertexes, cone_indexes))
+            return false;
+
+        auto cube = Object();
+        if (!cube.create_vertex_and_index_buffers(context, cube_vertexes, cube_indexes))
             return false;
 
         objects.push_back(cone);
+        objects.push_back(cube);
 
         vk_vertex_shader = load_shader_module("../shaders/cone.vert.spv");
         vk_fragment_shader = load_shader_module("../shaders/cone.frag.spv");
@@ -501,12 +509,12 @@ namespace application {
 
         const VkDescriptorPoolSize descriptor_pool_size = {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
+            .descriptorCount = 2,
         };
 
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 1,
+            .maxSets = 2,
             .poolSizeCount = 1,
             .pPoolSizes = &descriptor_pool_size,
         };
@@ -682,9 +690,20 @@ namespace application {
         }
 
         auto &cone_uniform_memory = objects[0].vk_global_uniform_memory;
+        auto &cube_uniform_memory = objects[1].vk_global_uniform_memory;
+
         cone_uniform_memory->model = model;
         cone_uniform_memory->view = view;
         cone_uniform_memory->proj = proj;
+
+        cube_uniform_memory->model = model;
+        cube_uniform_memory->view = view;
+        cube_uniform_memory->proj = proj;
+
+        cube_uniform_memory->color[0] = ui_color[0];
+        cube_uniform_memory->color[1] = ui_color[1];
+        cube_uniform_memory->color[2] = ui_color[2];
+        cube_uniform_memory->color[3] = 1;
 
         cone_uniform_memory->color[0] = ui_color[0];
         cone_uniform_memory->color[1] = ui_color[1];
