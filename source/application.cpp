@@ -23,6 +23,150 @@ namespace application {
         float color[3];
     };
 
+    struct Object {
+        uint32_t vk_index_count{};
+
+        VkBuffer vk_vertex_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_vertex_buffer_allocation = VK_NULL_HANDLE;
+
+        VkBuffer vk_index_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
+
+        VkBuffer vk_global_uniform_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
+        GlobalUniforms *vk_global_uniform_memory = nullptr;
+        VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
+
+        Object() = default;
+
+        bool create_vertex_and_index_buffers(
+            const graphics::internal::Context &context,
+            const std::vector<Vertex> &vertexes,
+            const std::vector<uint32_t> &indexes
+        ) {
+            const VkBufferCreateInfo vertex_buffer = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = sizeof(Vertex) * vertexes.size(),
+                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+
+            constexpr VmaAllocationCreateInfo vertex_buffer_allocation = {
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+
+            VmaAllocationInfo vertex_allocation_info{};
+            if (vmaCreateBuffer(
+                    context.allocator,
+                    &vertex_buffer,
+                    &vertex_buffer_allocation,
+                    &vk_vertex_buffer,
+                    &vk_vertex_buffer_allocation,
+                    &vertex_allocation_info
+                ) != VK_SUCCESS) {
+                std::cerr << "Failed to create and allocate vertex buffer\n";
+                return false;
+            }
+
+            std::memcpy(vertex_allocation_info.pMappedData, vertexes.data(), sizeof(Vertex) * vertexes.size());
+            std::cout << "Successfully created, allocated and mapped vertex buffer memory\n";
+
+            vk_index_count = indexes.size();
+            const VkBufferCreateInfo index_buffer = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = sizeof(uint32_t) * indexes.size(),
+                .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+
+            constexpr VmaAllocationCreateInfo index_buffer_allocation = {
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+
+            VmaAllocationInfo index_allocation_info{};
+            if (vmaCreateBuffer(
+                    context.allocator,
+                    &index_buffer,
+                    &index_buffer_allocation,
+                    &vk_index_buffer,
+                    &vk_index_buffer_allocation,
+                    &index_allocation_info
+                ) != VK_SUCCESS) {
+                std::cerr << "Failed to create and allocate index buffer\n";
+                return false;
+            }
+
+            std::memcpy(index_allocation_info.pMappedData, indexes.data(), sizeof(uint32_t) * indexes.size());
+            std::cout << "Successfully created, allocated and mapped index buffer memory\n";
+            return true;
+        }
+
+        bool update_descriptor_sets(
+            const graphics::internal::Context &context,
+            const VkDescriptorPool &vk_descriptor_pool,
+            const VkDescriptorSetLayout &vk_descriptor_set_layout
+        ) {
+            const VkBufferCreateInfo uniform_buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = sizeof(GlobalUniforms),
+                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+
+            constexpr VmaAllocationCreateInfo uniform_buffer_allocation = {
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+
+            VmaAllocationInfo uniform_allocation_info{};
+            if (vmaCreateBuffer(
+                    context.allocator,
+                    &uniform_buffer_info,
+                    &uniform_buffer_allocation,
+                    &vk_global_uniform_buffer,
+                    &vk_global_uniform_buffer_allocation,
+                    &uniform_allocation_info
+                ) != VK_SUCCESS) {
+                std::cerr << "Failed to create uniform buffer\n";
+                return false;
+            }
+            vk_global_uniform_memory = static_cast<GlobalUniforms *>(uniform_allocation_info.pMappedData);
+            std::cout << "Successfully created uniform memory\n";
+
+            const VkDescriptorSetAllocateInfo descriptor_set_info = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = vk_descriptor_pool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &vk_descriptor_set_layout,
+            };
+
+            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_descriptor_set) != VK_SUCCESS) {
+                std::cerr << "Failed to allocate descriptor set\n";
+                return false;
+            }
+
+            const VkDescriptorBufferInfo descriptor_buffer_info = {
+                .buffer = vk_global_uniform_buffer,
+                .offset = 0,
+                .range = sizeof(GlobalUniforms),
+            };
+
+            const VkWriteDescriptorSet descriptor_write = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = vk_descriptor_set,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pBufferInfo = &descriptor_buffer_info,
+            };
+
+            vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+            return true;
+        }
+    };
+
     std::array<float, 3> color_from_pos(float x, float y, float z) {
         return {
             x * 0.5f + 0.5f,
@@ -80,6 +224,40 @@ namespace application {
         return indexes;
     }
 
+    std::vector<Vertex> make_cube_vertexes() {
+        std::vector<Vertex> array;
+        array.reserve(8);
+
+        array = {
+            {{0.5, 0.5, 0.5}, {1, 0, 0}},
+            {{0.5, 0.5, -0.5}, {1, 0, 0}},
+            {{-0.5, 0.5, 0.5}, {1, 0, 0}},
+            {{-0.5, 0.5, -0.5}, {1, 0, 0}},
+            {{0.5, -0.5, 0.5}, {0, 1, 0}},
+            {{0.5, -0.5, -0.5}, {0, 1, 0}},
+            {{-0.5, -0.5, 0.5}, {0, 1, 0}},
+            {{-0.5, -0.5, -0.5}, {0, 1, 0}},
+        };
+
+        return array;
+    }
+
+    std::vector<uint32_t> make_cube_indexes() {
+        std::vector<uint32_t> indexes;
+        indexes.reserve(6 * 2 * 3); // 6 граней, 2 треугольника, 3 вершины в каждом треугольнике
+
+        indexes = {
+            0, 1, 2, 1, 2, 3, // нижняя грань
+            0, 4, 1, 4, 1, 5, // передняя грань
+            1, 5, 3, 5, 3, 6, // правая грань
+            3, 2, 6, 2, 6, 7, // задняя грань
+            2, 0, 4, 0, 4, 7, // левая грань
+            4, 7, 5, 7, 5, 6, // верхняя грань
+        };
+
+        return indexes;
+    }
+
     VkShaderModule load_shader_module(const std::string &path) {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         if (!file.is_open()) {
@@ -111,13 +289,8 @@ namespace application {
 
     namespace {
         constexpr int CONE_SEGMENTS = 24;
-        uint32_t vk_index_count = 0;
 
-        VkBuffer vk_vertex_buffer = VK_NULL_HANDLE;
-        VmaAllocation vk_vertex_buffer_allocation = VK_NULL_HANDLE;
-
-        VkBuffer vk_index_buffer = VK_NULL_HANDLE;
-        VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
+        std::vector<Object> objects{};
 
         VkShaderModule vk_vertex_shader = VK_NULL_HANDLE;
         VkShaderModule vk_fragment_shader = VK_NULL_HANDLE;
@@ -125,13 +298,8 @@ namespace application {
         VkPipelineLayout vk_cone_layout = VK_NULL_HANDLE;
         VkPipeline vk_cone_pipeline = VK_NULL_HANDLE;
 
-        VkBuffer vk_global_uniform_buffer = VK_NULL_HANDLE;
-        VmaAllocation vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
-        GlobalUniforms *vk_global_uniform_memory = nullptr;
-
         VkDescriptorSetLayout vk_descriptor_set_layout = VK_NULL_HANDLE;
         VkDescriptorPool vk_descriptor_pool = VK_NULL_HANDLE;
-        VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
 
         bool ui_use_perspective = true;
         float ui_fov_deg = 60; // угол обзора по вертикали
@@ -146,71 +314,20 @@ namespace application {
         float ui_path_height = 0.6; // амплитуда по Y
         float ui_anim_time = 0;
 
-        float ui_color[3] = {1.0f, 1.0f, 1.0f};
+        float ui_color[3] = {1, 1, 1};
     }
 
     bool initialize() {
         auto &context = graphics::internal::context;
 
         const auto vertexes = make_cone_vertexes(CONE_SEGMENTS);
-
-        const VkBufferCreateInfo vertex_buffer = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = sizeof(Vertex) * vertexes.size(),
-            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        };
-
-        constexpr VmaAllocationCreateInfo vertex_buffer_allocation = {
-            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-            .usage = VMA_MEMORY_USAGE_AUTO,
-        };
-
-        VmaAllocationInfo vertex_allocation_info{};
-        if (vmaCreateBuffer(
-                context.allocator,
-                &vertex_buffer,
-                &vertex_buffer_allocation,
-                &vk_vertex_buffer,
-                &vk_vertex_buffer_allocation,
-                &vertex_allocation_info
-            ) != VK_SUCCESS) {
-            std::cerr << "Failed to create and allocate vertex buffer\n";
-            return false;
-        }
-
-        std::memcpy(vertex_allocation_info.pMappedData, vertexes.data(), sizeof(Vertex) * vertexes.size());
-        std::cout << "Successfully created, allocated and mapped vertex buffer memory\n";
-
         const auto indexes = make_cone_indexes(CONE_SEGMENTS);
-        vk_index_count = indexes.size();
-        const VkBufferCreateInfo index_buffer = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = sizeof(uint32_t) * indexes.size(),
-            .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        };
 
-        constexpr VmaAllocationCreateInfo index_buffer_allocation = {
-            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-            .usage = VMA_MEMORY_USAGE_AUTO,
-        };
-
-        VmaAllocationInfo index_allocation_info{};
-        if (vmaCreateBuffer(
-                context.allocator,
-                &index_buffer,
-                &index_buffer_allocation,
-                &vk_index_buffer,
-                &vk_index_buffer_allocation,
-                &index_allocation_info
-            ) != VK_SUCCESS) {
-            std::cerr << "Failed to create and allocate index buffer\n";
+        auto cone = Object();
+        if (!cone.create_vertex_and_index_buffers(context, vertexes, indexes))
             return false;
-        }
 
-        std::memcpy(index_allocation_info.pMappedData, indexes.data(), sizeof(uint32_t) * indexes.size());
-        std::cout << "Successfully created, allocated and mapped index buffer memory\n";
+        objects.push_back(cone);
 
         vk_vertex_shader = load_shader_module("../shaders/cone.vert.spv");
         vk_fragment_shader = load_shader_module("../shaders/cone.frag.spv");
@@ -340,32 +457,6 @@ namespace application {
             return false;
         }
 
-        const VkBufferCreateInfo uniform_buffer_info = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .size = sizeof(GlobalUniforms),
-            .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        };
-
-        constexpr VmaAllocationCreateInfo uniform_buffer_allocation = {
-            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-            .usage = VMA_MEMORY_USAGE_AUTO,
-        };
-
-        VmaAllocationInfo uniform_allocation_info{};
-        if (vmaCreateBuffer(
-                context.allocator,
-                &uniform_buffer_info,
-                &uniform_buffer_allocation,
-                &vk_global_uniform_buffer,
-                &vk_global_uniform_buffer_allocation,
-                &uniform_allocation_info
-            ) != VK_SUCCESS) {
-            std::cerr << "Failed to create uniform buffer\n";
-            return false;
-        }
-        vk_global_uniform_memory = static_cast<GlobalUniforms *>(uniform_allocation_info.pMappedData);
-
         const VkPipelineLayoutCreateInfo layout_create_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1,
@@ -425,35 +516,11 @@ namespace application {
             return false;
         }
 
-
-        const VkDescriptorSetAllocateInfo descriptor_set_info = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = vk_descriptor_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &vk_descriptor_set_layout,
-        };
-
-        if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_descriptor_set) != VK_SUCCESS) {
-            std::cerr << "Failed to allocate descriptor set\n";
-            return false;
+        for (auto &object: objects) {
+            if (!object.update_descriptor_sets(context, vk_descriptor_pool, vk_descriptor_set_layout))
+                return false;
         }
 
-        const VkDescriptorBufferInfo descriptor_buffer_info = {
-            .buffer = vk_global_uniform_buffer,
-            .offset = 0,
-            .range = sizeof(GlobalUniforms),
-        };
-
-        const VkWriteDescriptorSet descriptor_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = vk_descriptor_set,
-            .dstBinding = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pBufferInfo = &descriptor_buffer_info,
-        };
-
-        vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
         return true;
     }
 
@@ -484,7 +551,9 @@ namespace application {
         if (vk_descriptor_pool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(context.device, vk_descriptor_pool, nullptr);
             vk_descriptor_pool = VK_NULL_HANDLE;
-            vk_descriptor_set = VK_NULL_HANDLE;
+
+            for (auto &object: objects)
+                object.vk_descriptor_set = VK_NULL_HANDLE;
         }
 
         if (vk_descriptor_set_layout != VK_NULL_HANDLE) {
@@ -492,23 +561,31 @@ namespace application {
             vk_descriptor_set_layout = VK_NULL_HANDLE;
         }
 
-        if (vk_global_uniform_buffer != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(context.allocator, vk_global_uniform_buffer, vk_global_uniform_buffer_allocation);
-            vk_global_uniform_buffer = VK_NULL_HANDLE;
-            vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
-            vk_global_uniform_memory = nullptr;
+        for (auto &object: objects) {
+            if (object.vk_global_uniform_buffer != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(
+                    context.allocator,
+                    object.vk_global_uniform_buffer,
+                    object.vk_global_uniform_buffer_allocation
+                );
+                object.vk_global_uniform_buffer = VK_NULL_HANDLE;
+                object.vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
+                object.vk_global_uniform_memory = nullptr;
+            }
         }
 
-        if (vk_vertex_buffer != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
-            vk_vertex_buffer = VK_NULL_HANDLE;
-            vk_vertex_buffer_allocation = VK_NULL_HANDLE;
-        }
+        for (auto &object: objects) {
+            if (object.vk_vertex_buffer != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(context.allocator, object.vk_vertex_buffer, object.vk_vertex_buffer_allocation);
+                object.vk_vertex_buffer = VK_NULL_HANDLE;
+                object.vk_vertex_buffer_allocation = VK_NULL_HANDLE;
+            }
 
-        if (vk_index_buffer != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(context.allocator, vk_index_buffer, vk_index_buffer_allocation);
-            vk_index_buffer = VK_NULL_HANDLE;
-            vk_index_buffer_allocation = VK_NULL_HANDLE;
+            if (object.vk_index_buffer != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(context.allocator, object.vk_index_buffer, object.vk_index_buffer_allocation);
+                object.vk_index_buffer = VK_NULL_HANDLE;
+                object.vk_index_buffer_allocation = VK_NULL_HANDLE;
+            }
         }
     }
 
@@ -604,14 +681,15 @@ namespace application {
             proj = math::Mat4::ortho(-half_w, half_w, half_h, -half_h, 0.1, 100);
         }
 
-        vk_global_uniform_memory->model = model;
-        vk_global_uniform_memory->view = view;
-        vk_global_uniform_memory->proj = proj;
+        auto &cone_uniform_memory = objects[0].vk_global_uniform_memory;
+        cone_uniform_memory->model = model;
+        cone_uniform_memory->view = view;
+        cone_uniform_memory->proj = proj;
 
-        vk_global_uniform_memory->color[0] = ui_color[0];
-        vk_global_uniform_memory->color[1] = ui_color[1];
-        vk_global_uniform_memory->color[2] = ui_color[2];
-        vk_global_uniform_memory->color[3] = 1;
+        cone_uniform_memory->color[0] = ui_color[0];
+        cone_uniform_memory->color[1] = ui_color[1];
+        cone_uniform_memory->color[2] = ui_color[2];
+        cone_uniform_memory->color[3] = 1;
     }
 
     void render(const graphics::internal::FrameData &fd) {
@@ -656,25 +734,26 @@ namespace application {
         const VkRect2D scissor = {.extent = context.swapchain_extent};
         vkCmdSetScissor(fd.command_buffer, 0, 1, &scissor);
 
-        vkCmdBindDescriptorSets(
-            fd.command_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            vk_cone_layout,
-            0,
-            1,
-            &vk_descriptor_set,
-            0,
-            nullptr
-        );
-
         vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_cone_pipeline);
 
-        const VkDeviceSize device_size = 0;
-        vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vk_vertex_buffer, &device_size);
-        vkCmdBindIndexBuffer(fd.command_buffer, vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
+        for (const auto &object: objects) {
+            const VkDeviceSize device_size = 0;
+            vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &object.vk_vertex_buffer, &device_size);
+            vkCmdBindIndexBuffer(fd.command_buffer, object.vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        vkCmdDrawIndexed(fd.command_buffer, vk_index_count, 1, 0, 0, 0);
+            vkCmdBindDescriptorSets(
+                fd.command_buffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                vk_cone_layout,
+                0,
+                1,
+                &object.vk_descriptor_set,
+                0,
+                nullptr
+            );
 
+            vkCmdDrawIndexed(fd.command_buffer, object.vk_index_count, 1, 0, 0, 0);
+        }
         vkCmdEndRenderPass(fd.command_buffer);
         vkEndCommandBuffer(fd.command_buffer);
     }
