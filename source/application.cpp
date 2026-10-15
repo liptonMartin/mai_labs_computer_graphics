@@ -16,6 +16,7 @@ namespace application {
     enum class Figure {
         Cube,
         Cone,
+        Cone2,
     };
 
     struct DirectionalLightUniform {
@@ -645,8 +646,13 @@ namespace application {
         if (!cube.create_vertex_and_index_buffers(context, cube_vertexes, cube_indexes))
             return false;
 
+        auto cone2 = Object();
+        if (!cone2.create_vertex_and_index_buffers(context, cone_vertexes, cone_indexes))
+            return false;
+
         objects[Figure::Cone] = cone;
         objects[Figure::Cube] = cube;
+        objects[Figure::Cone2] = cone2;
 
         vk_vertex_shader = load_shader_module("../shaders/cone.vert.spv");
         vk_fragment_shader = load_shader_module("../shaders/cone.frag.spv");
@@ -851,12 +857,12 @@ namespace application {
         std::cout << "Pipeline created\n";
 
         const VkDescriptorPoolSize pool_sizes[] = {
-            {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 3},
+            {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4},
             {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 2},
         };
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 3,
+            .maxSets = 4,
             .poolSizeCount = 2,
             .pPoolSizes = pool_sizes,
         };
@@ -1361,7 +1367,12 @@ namespace application {
         const float y_amp = ui_path_height;
 
         const auto animated_pos_cone = create_animated_position_cone(t, r, y_amp);
-        const auto pos_cube = create_animated_position_cube(t, r);
+        const auto animated_pos_cube = create_animated_position_cube(t, r);
+        const math::Vec3 pos_cube = {
+            animated_pos_cube.x + 1.5f,
+            animated_pos_cube.y,
+            animated_pos_cube.z,
+        };
 
         const math::Vec3 pos_cone = ui_playing
                                         ? animated_pos_cone
@@ -1388,6 +1399,25 @@ namespace application {
                 * math::Mat4::rotate_x(ui_rotation[0] * deg2rad)
                 * math::Mat4::rotate_z(ui_rotation[2] * deg2rad)
                 * math::Mat4::scale(ui_scale[0], ui_scale[1], ui_scale[2]);
+
+        const auto animated_pos_cone2 = create_animated_position_cone(
+            t + 1.7f,
+            r * 0.75f,
+            y_amp * 0.5f
+        );
+
+        const math::Vec3 pos_cone2 = ui_playing
+                                         ? animated_pos_cone2
+                                         : math::Vec3{-1.5f, 0.0f, 0.0f};
+
+        const math::Mat4 cone2_model =
+                math::Mat4::translate(pos_cone2.x, pos_cone2.y, pos_cone2.z)
+                * math::Mat4::rotate_y(ui_rotation[1] * deg2rad + 0.8f)
+                * math::Mat4::rotate_x(ui_rotation[0] * deg2rad)
+                * math::Mat4::rotate_z(ui_rotation[2] * deg2rad)
+                * math::Mat4::scale(ui_scale[0] * 0.7f,
+                                    ui_scale[1] * 0.7f,
+                                    ui_scale[2] * 0.7f);
 
         const math::Mat4 cube_model = math::Mat4::translate(pos_cube.x, pos_cube.y, pos_cube.z);
 
@@ -1497,6 +1527,18 @@ namespace application {
             mm->albedo[1] = ui_albedo[1];
             mm->albedo[2] = ui_albedo[2];
             mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding = 0.0f;
+        }
+        {
+            auto &mm = objects[Figure::Cone2].vk_model_uniform_memory;
+            mm->model = cone2_model;
+            mm->albedo[0] = ui_albedo[0] * 0.85f;
+            mm->albedo[1] = ui_albedo[1];
+            mm->albedo[2] = ui_albedo[2] * 1.0f;
+            mm->shininess = ui_shininess * 0.7f;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
             mm->specularColor[2] = ui_specular_color[2];
