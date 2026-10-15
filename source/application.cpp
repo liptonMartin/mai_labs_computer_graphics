@@ -1021,10 +1021,10 @@ namespace application {
             sl.color[0] = 1.0f;
             sl.color[1] = 1.0f;
             sl.color[2] = 1.0f;
-            sl.intensity = 2.0f;
-            sl.innerAngle = 0.30f; // ~17°
-            sl.outerAngle = 0.50f; // ~28°
-            sl.radius = 6.0f;
+            sl.intensity = 30.0f;
+            sl.innerAngle = 0.25f; // 14 градусов
+            sl.outerAngle = 0.45f; // 26 градусов
+            sl.radius = 10.0f;
             spot_lights.push_back(sl);
         }
         ImGui::SameLine();
@@ -1037,7 +1037,7 @@ namespace application {
                 ImGui::SliderFloat3("Position", spot_lights[i].position, -10.0f, 10.0f);
                 ImGui::SliderFloat3("Direction", spot_lights[i].direction, -1.0f, 1.0f);
                 ImGui::ColorEdit3("Color", spot_lights[i].color);
-                ImGui::SliderFloat("Intensity", &spot_lights[i].intensity, 0.0f, 10.0f);
+                ImGui::SliderFloat("Intensity", &spot_lights[i].intensity, 0.0f, 100.0f);
                 ImGui::SliderFloat("Inner angle", &spot_lights[i].innerAngle, 0.0f, 1.55f);
                 ImGui::SliderFloat("Outer angle", &spot_lights[i].outerAngle, 0.0f, 1.55f);
                 ImGui::SliderFloat("Radius", &spot_lights[i].radius, 0.0f, 20.0f);

@@ -73,7 +73,7 @@ void main() {
         (model_data.albedo * NdotLd + model_data.specularColor * spec_d)
         * scene.dir_color * scene.dir_intensity;
 
-    vec3 point_accum = vec3(0.0);
+vec3 point_accum = vec3(0.0);
     const uint pl_count = min(scene.pointLightCount, uint(pointLights.lights.length()));
     for (uint i = 0u; i < pl_count; ++i) {
         const PointLight pl = pointLights.lights[i];
@@ -103,10 +103,52 @@ void main() {
         point_accum += contribution;
     }
 
-    const vec3 final_color = ambient + directional + point_accum;
+    vec3 spot_accum = vec3(0.0);
+    const uint sl_count = min(scene.spotLightCount, uint(spotLights.lights.length()));
+    for (uint i = 0u; i < sl_count; ++i) {
+        const SpotLight sl = spotLights.lights[i];
 
-    vec3 dummy = vec3(0.0);
-    if (scene.spotLightCount > 0u) dummy += spotLights.lights[0].color;
+        const vec3  to_light = sl.position - in_world_pos;
+        const float dist2    = max(dot(to_light, to_light), 1e-6);
+        const float dist     = sqrt(dist2);
+        const vec3  L        = to_light / dist;
 
-    out_color = vec4(final_color + dummy * 0.0, 1.0);
+        const vec3 spotDir = normalize(sl.direction);
+
+        const float theta = dot(-L, spotDir);
+
+        const float cos_inner = cos(sl.innerAngle);
+        const float cos_outer = cos(sl.outerAngle);
+
+        const float epsilon = max(cos_outer - cos_inner, 1e-4);
+        float spotAttenuation = clamp((theta - cos_inner) / epsilon, 0.0, 1.0);
+
+        // Если theta меньше cos_outer — вне конуса, свет = 0.
+        // Если theta больше cos_inner — внутри ядра, свет = 1.
+        // Между ними — линейный градиент.
+
+        const float attenuation = 1.0 / dist2;
+
+        const vec3  H      = normalize(L + V);
+        const float NdotL  = max(dot(N, L), 0.0);
+        const float NdotH  = max(dot(N, H), 0.0);
+        const float spec_s = (NdotL > 0.0) ? pow(NdotH, max(model_data.shininess, 1e-3)) : 0.0;
+
+        float radius_falloff = 1.0;
+        if (sl.radius > 0.0) {
+            const float t = clamp(1.0 - (dist / sl.radius), 0.0, 1.0);
+            radius_falloff = t * t;
+        }
+
+        const vec3 contribution =
+            (model_data.albedo * NdotL + model_data.specularColor * spec_s)
+            * sl.color * sl.intensity * attenuation
+            * spotAttenuation * radius_falloff;
+
+        spot_accum += contribution;
+    }
+
+    const vec3 final_color = ambient + directional + point_accum + spot_accum;
+
+    out_color = vec4(final_color, 1.0);
 }
