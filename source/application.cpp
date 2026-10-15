@@ -18,12 +18,41 @@ namespace application {
         Cone,
     };
 
-    struct GlobalUniforms {
-        math::Mat4 model;
-        math::Mat4 view;
-        math::Mat4 proj;
-        float color[4]{};
+    // =====================================================================
+    //  Scene block (set=0)
+    //  Раскладка std140.  Размеры / смещения подобраны так, чтобы C++
+    //  структура в точности соответствовала GLSL-блоку.
+    // =====================================================================
+    struct DirectionalLightUniform {
+        float direction[3];   // offset 0
+        float intensity;      // offset 12
+        float color[3];       // offset 16
+        float _padding;       // offset 28  -> размер 32
     };
+    static_assert(sizeof(DirectionalLightUniform) == 32);
+
+    struct SceneUniforms {
+        math::Mat4 view;                       // offset 0
+        math::Mat4 proj;                       // offset 64
+        float cameraPos[3];                    // offset 128
+        float ambientStrength;                 // offset 140
+        float ambientColor[3];                 // offset 144
+        float _padding0;                       // offset 156
+        DirectionalLightUniform directional;   // offset 160
+    };
+    static_assert(sizeof(SceneUniforms) == 192);
+
+    // =====================================================================
+    //  Model block (set=1)
+    // =====================================================================
+    struct ModelUniforms {
+        math::Mat4 model;          // offset 0
+        float albedo[3];           // offset 64
+        float shininess;           // offset 76
+        float specularColor[3];    // offset 80
+        float _padding;            // offset 92  -> размер 96
+    };
+    static_assert(sizeof(ModelUniforms) == 96);
 
     struct Vertex {
         float pos[3];
@@ -40,10 +69,11 @@ namespace application {
         VkBuffer vk_index_buffer = VK_NULL_HANDLE;
         VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
 
-        VkBuffer vk_global_uniform_buffer = VK_NULL_HANDLE;
-        VmaAllocation vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
-        GlobalUniforms *vk_global_uniform_memory = nullptr;
-        VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
+        // model uniforms (set=1)
+        VkBuffer vk_model_uniform_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_model_uniform_buffer_allocation = VK_NULL_HANDLE;
+        ModelUniforms *vk_model_uniform_memory = nullptr;
+        VkDescriptorSet vk_model_descriptor_set = VK_NULL_HANDLE;
 
         Object() = default;
 
@@ -111,14 +141,15 @@ namespace application {
             return true;
         }
 
-        bool update_descriptor_sets(
+        bool create_model_resources(
             const graphics::internal::Context &context,
             const VkDescriptorPool &vk_descriptor_pool,
-            const VkDescriptorSetLayout &vk_descriptor_set_layout
+            const VkDescriptorSetLayout &vk_model_descriptor_set_layout
         ) {
+            // --- model uniform buffer ---
             const VkBufferCreateInfo uniform_buffer_info = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size = sizeof(GlobalUniforms),
+                .size = sizeof(ModelUniforms),
                 .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             };
@@ -133,37 +164,37 @@ namespace application {
                     context.allocator,
                     &uniform_buffer_info,
                     &uniform_buffer_allocation,
-                    &vk_global_uniform_buffer,
-                    &vk_global_uniform_buffer_allocation,
+                    &vk_model_uniform_buffer,
+                    &vk_model_uniform_buffer_allocation,
                     &uniform_allocation_info
                 ) != VK_SUCCESS) {
-                std::cerr << "Failed to create uniform buffer\n";
+                std::cerr << "Failed to create model uniform buffer\n";
                 return false;
             }
-            vk_global_uniform_memory = static_cast<GlobalUniforms *>(uniform_allocation_info.pMappedData);
-            std::cout << "Successfully created uniform memory\n";
+            vk_model_uniform_memory = static_cast<ModelUniforms *>(uniform_allocation_info.pMappedData);
 
+            // --- descriptor set ---
             const VkDescriptorSetAllocateInfo descriptor_set_info = {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                 .descriptorPool = vk_descriptor_pool,
                 .descriptorSetCount = 1,
-                .pSetLayouts = &vk_descriptor_set_layout,
+                .pSetLayouts = &vk_model_descriptor_set_layout,
             };
 
-            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_descriptor_set) != VK_SUCCESS) {
-                std::cerr << "Failed to allocate descriptor set\n";
+            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_model_descriptor_set) != VK_SUCCESS) {
+                std::cerr << "Failed to allocate model descriptor set\n";
                 return false;
             }
 
             const VkDescriptorBufferInfo descriptor_buffer_info = {
-                .buffer = vk_global_uniform_buffer,
+                .buffer = vk_model_uniform_buffer,
                 .offset = 0,
-                .range = sizeof(GlobalUniforms),
+                .range = sizeof(ModelUniforms),
             };
 
             const VkWriteDescriptorSet descriptor_write = {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = vk_descriptor_set,
+                .dstSet = vk_model_descriptor_set,
                 .dstBinding = 0,
                 .descriptorCount = 1,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -171,6 +202,7 @@ namespace application {
             };
 
             vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+            std::cout << "Successfully created model uniform memory and descriptor set\n";
             return true;
         }
     };
@@ -210,7 +242,6 @@ namespace application {
             const float x = std::cos(corner) * radius;
             const float z = std::sin(corner) * radius;
 
-            // Аналитическая нормаль боковой поверхности
             const float nx = height * std::cos(corner);
             const float ny = radius;
             const float nz = height * std::sin(corner);
@@ -261,12 +292,10 @@ namespace application {
         const uint32_t base_center = n + 1;
 
         for (int i = 0; i < n; ++i) {
-            // Боковая поверхность
             const uint32_t current = 1 + i;
             const uint32_t next = 1 + (i + 1) % n;
             indexes.insert(indexes.end(), {apex, current, next});
 
-            // Основание (плоское, с нормалью вниз)
             const uint32_t base_current = n + 2 + i;
             const uint32_t base_next = n + 2 + (i + 1) % n;
             indexes.insert(indexes.end(), {base_center, base_current, base_next});
@@ -289,37 +318,37 @@ namespace application {
             array.push_back(Vertex{{x, y, z}, {c[0], c[1], c[2]}, {n[0], n[1], n[2]}});
         };
 
-        // FRONT
+        // FRONT (+Z)
         push(s, s, s, red, {0, 0, 1}); // 0 TR
         push(-s, s, s, red, {0, 0, 1}); // 1 TL
         push(-s, -s, s, green, {0, 0, 1}); // 2 BL
         push(s, -s, s, green, {0, 0, 1}); // 3 BR
 
-        // BACK
+        // BACK (-Z)
         push(-s, s, -s, red, {0, 0, -1}); // 4
         push(s, s, -s, red, {0, 0, -1}); // 5
         push(s, -s, -s, green, {0, 0, -1}); // 6
         push(-s, -s, -s, green, {0, 0, -1}); // 7
 
-        // RIGHT
+        // RIGHT (+X)
         push(s, s, -s, red, {1, 0, 0}); // 8
         push(s, s, s, red, {1, 0, 0}); // 9
         push(s, -s, s, green, {1, 0, 0}); // 10
         push(s, -s, -s, green, {1, 0, 0}); // 11
 
-        // LEFT
+        // LEFT (-X)
         push(-s, s, s, red, {-1, 0, 0}); // 12
         push(-s, s, -s, red, {-1, 0, 0}); // 13
         push(-s, -s, -s, green, {-1, 0, 0}); // 14
         push(-s, -s, s, green, {-1, 0, 0}); // 15
 
-        // TOP
+        // TOP (+Y)
         push(s, s, -s, red, {0, 1, 0}); // 16
         push(-s, s, -s, red, {0, 1, 0}); // 17
         push(-s, s, s, red, {0, 1, 0}); // 18
         push(s, s, s, red, {0, 1, 0}); // 19
 
-        // BOTTOM
+        // BOTTOM (-Y)
         push(s, -s, s, green, {0, -1, 0}); // 20
         push(-s, -s, s, green, {0, -1, 0}); // 21
         push(-s, -s, -s, green, {0, -1, 0}); // 22
@@ -339,7 +368,6 @@ namespace application {
 
         return indexes;
     }
-
 
     math::Vec3 create_animated_position_cone(const float time, const float radius, const float y_amplitude) {
         const float px = radius * std::sin(time);
@@ -397,29 +425,44 @@ namespace application {
         VkPipelineLayout vk_cone_layout = VK_NULL_HANDLE;
         VkPipeline vk_cone_pipeline = VK_NULL_HANDLE;
 
-        VkDescriptorSetLayout vk_descriptor_set_layout = VK_NULL_HANDLE;
+        VkDescriptorSetLayout vk_scene_descriptor_set_layout = VK_NULL_HANDLE;
+        VkDescriptorSetLayout vk_model_descriptor_set_layout = VK_NULL_HANDLE;
         VkDescriptorPool vk_descriptor_pool = VK_NULL_HANDLE;
 
-        bool ui_use_perspective = true;
-        float ui_camera_position[3] = {0, 0, 4}; // стартовая — как раньше (0,0,4)
-        float ui_camera_yaw_deg = 0; // поворот вокруг Y
-        float ui_camera_pitch_deg = 0; // наклон вокруг X
-        float ui_camera_near = 0.1;
-        float ui_camera_far = 100;
+        VkBuffer vk_scene_uniform_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_scene_uniform_buffer_allocation = VK_NULL_HANDLE;
+        SceneUniforms *vk_scene_uniform_memory = nullptr;
+        VkDescriptorSet vk_scene_descriptor_set = VK_NULL_HANDLE;
 
-        float ui_fov_deg = 60; // угол обзора по вертикали
+        bool ui_use_perspective = true;
+        float ui_fov_deg = 60;
         float ui_ortho_size = 1.5;
+        float ui_camera_position[3] = {0, 0, 4};
+        float ui_camera_yaw_deg = 0;
+        float ui_camera_pitch_deg = 0;
+        float ui_camera_near = 0.1f;
+        float ui_camera_far = 100.0f;
+
         float ui_position[3] = {0, 0, 0};
-        float ui_rotation[3] = {0, 0, 0}; // в градусах
+        float ui_rotation[3] = {0, 0, 0};
         float ui_scale[3] = {1, 1, 1};
 
         bool ui_playing = false;
         float ui_anim_speed = 1;
         float ui_path_radius = 2;
-        float ui_path_height = 0.6; // амплитуда по Y
+        float ui_path_height = 0.6;
         float ui_anim_time = 0;
 
-        float ui_color[3] = {1, 1, 1};
+        float ui_ambient_strength = 0.15f;
+        float ui_ambient_color[3] = {1, 1, 1};
+
+        float ui_dir_direction[3] = {0.4f, -1.0f, -0.5f};
+        float ui_dir_color[3] = {1, 1, 1};
+        float ui_dir_intensity = 0;
+
+        float ui_albedo[3] = {1, 1, 1};
+        float ui_specular_color[3] = {1, 1, 1};
+        float ui_shininess = 32.0f;
     }
 
     bool initialize() {
@@ -553,35 +596,52 @@ namespace application {
             .pDynamicStates = dynamic_states,
         };
 
-        const VkDescriptorSetLayoutBinding descriptor_binding = {
+        const VkDescriptorSetLayoutBinding scene_binding = {
             .binding = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         };
-
-        const VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info = {
+        const VkDescriptorSetLayoutCreateInfo scene_layout_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .bindingCount = 1,
-            .pBindings = &descriptor_binding,
+            .pBindings = &scene_binding,
         };
-
         if (vkCreateDescriptorSetLayout(
-                context.device,
-                &descriptor_set_layout_info,
-                nullptr,
-                &vk_descriptor_set_layout
-            ) != VK_SUCCESS) {
-            std::cerr << "Failed to create descriptor set layout\n";
+                context.device, &scene_layout_info, nullptr,
+                &vk_scene_descriptor_set_layout) != VK_SUCCESS) {
+            std::cerr << "Failed to create scene descriptor set layout\n";
             return false;
         }
 
+        // ---------- set=1: model ----------
+        const VkDescriptorSetLayoutBinding model_binding = {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        };
+        const VkDescriptorSetLayoutCreateInfo model_layout_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = 1,
+            .pBindings = &model_binding,
+        };
+        if (vkCreateDescriptorSetLayout(
+                context.device, &model_layout_info, nullptr,
+                &vk_model_descriptor_set_layout) != VK_SUCCESS) {
+            std::cerr << "Failed to create model descriptor set layout\n";
+            return false;
+        }
+
+        const VkDescriptorSetLayout set_layouts[2] = {
+            vk_scene_descriptor_set_layout,
+            vk_model_descriptor_set_layout,
+        };
         const VkPipelineLayoutCreateInfo layout_create_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1,
-            .pSetLayouts = &vk_descriptor_set_layout,
+            .setLayoutCount = 2,
+            .pSetLayouts = set_layouts,
         };
-
         if (vkCreatePipelineLayout(context.device, &layout_create_info, nullptr, &vk_cone_layout) != VK_SUCCESS) {
             std::cerr << "Failed to create pipeline layout!\n";
             return false;
@@ -605,38 +665,81 @@ namespace application {
         };
 
         if (vkCreateGraphicsPipelines(
-                context.device,
-                VK_NULL_HANDLE,
-                1,
-                &graphics_pipeline_create_info,
-                nullptr,
-                &vk_cone_pipeline
-            ) != VK_SUCCESS) {
+                context.device, VK_NULL_HANDLE, 1,
+                &graphics_pipeline_create_info, nullptr,
+                &vk_cone_pipeline) != VK_SUCCESS) {
             std::cerr << "Failed to create graphics pipeline\n";
             return false;
         }
-
         std::cout << "Pipeline created\n";
 
+        // 1 uniform-буфер для сцены + 1 на каждый Object => 1 + 2 = 3
         const VkDescriptorPoolSize descriptor_pool_size = {
             .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 2,
+            .descriptorCount = 3,
         };
-
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 2,
+            .maxSets = 3,
             .poolSizeCount = 1,
             .pPoolSizes = &descriptor_pool_size,
         };
-
         if (vkCreateDescriptorPool(context.device, &descriptor_pool_info, nullptr, &vk_descriptor_pool) != VK_SUCCESS) {
             std::cerr << "Failed to create descriptor pool\n";
             return false;
         }
 
+        {
+            const VkBufferCreateInfo buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = sizeof(SceneUniforms),
+                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+            constexpr VmaAllocationCreateInfo allocation_info = {
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+            VmaAllocationInfo out_info{};
+            if (vmaCreateBuffer(
+                    context.allocator, &buffer_info, &allocation_info,
+                    &vk_scene_uniform_buffer, &vk_scene_uniform_buffer_allocation,
+                    &out_info) != VK_SUCCESS) {
+                std::cerr << "Failed to create scene uniform buffer\n";
+                return false;
+            }
+            vk_scene_uniform_memory = static_cast<SceneUniforms *>(out_info.pMappedData);
+            *vk_scene_uniform_memory = SceneUniforms{};
+
+            const VkDescriptorSetAllocateInfo descriptor_set_info = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = vk_descriptor_pool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &vk_scene_descriptor_set_layout,
+            };
+            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_scene_descriptor_set) != VK_SUCCESS) {
+                std::cerr << "Failed to allocate scene descriptor set\n";
+                return false;
+            }
+
+            const VkDescriptorBufferInfo descriptor_buffer_info = {
+                .buffer = vk_scene_uniform_buffer,
+                .offset = 0,
+                .range = sizeof(SceneUniforms),
+            };
+            const VkWriteDescriptorSet descriptor_write = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = vk_scene_descriptor_set,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pBufferInfo = &descriptor_buffer_info,
+            };
+            vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+        }
+
         for (auto &object: objects | std::views::values) {
-            if (!object.update_descriptor_sets(context, vk_descriptor_pool, vk_descriptor_set_layout))
+            if (!object.create_model_resources(context, vk_descriptor_pool, vk_model_descriptor_set_layout))
                 return false;
         }
 
@@ -671,25 +774,37 @@ namespace application {
             vkDestroyDescriptorPool(context.device, vk_descriptor_pool, nullptr);
             vk_descriptor_pool = VK_NULL_HANDLE;
 
+            vk_scene_descriptor_set = VK_NULL_HANDLE;
             for (auto &object: objects | std::views::values)
-                object.vk_descriptor_set = VK_NULL_HANDLE;
+                object.vk_model_descriptor_set = VK_NULL_HANDLE;
         }
 
-        if (vk_descriptor_set_layout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(context.device, vk_descriptor_set_layout, nullptr);
-            vk_descriptor_set_layout = VK_NULL_HANDLE;
+        if (vk_scene_descriptor_set_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(context.device, vk_scene_descriptor_set_layout, nullptr);
+            vk_scene_descriptor_set_layout = VK_NULL_HANDLE;
+        }
+        if (vk_model_descriptor_set_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(context.device, vk_model_descriptor_set_layout, nullptr);
+            vk_model_descriptor_set_layout = VK_NULL_HANDLE;
+        }
+
+        if (vk_scene_uniform_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, vk_scene_uniform_buffer, vk_scene_uniform_buffer_allocation);
+            vk_scene_uniform_buffer = VK_NULL_HANDLE;
+            vk_scene_uniform_buffer_allocation = VK_NULL_HANDLE;
+            vk_scene_uniform_memory = nullptr;
         }
 
         for (auto &object: objects | std::views::values) {
-            if (object.vk_global_uniform_buffer != VK_NULL_HANDLE) {
+            if (object.vk_model_uniform_buffer != VK_NULL_HANDLE) {
                 vmaDestroyBuffer(
                     context.allocator,
-                    object.vk_global_uniform_buffer,
-                    object.vk_global_uniform_buffer_allocation
+                    object.vk_model_uniform_buffer,
+                    object.vk_model_uniform_buffer_allocation
                 );
-                object.vk_global_uniform_buffer = VK_NULL_HANDLE;
-                object.vk_global_uniform_buffer_allocation = VK_NULL_HANDLE;
-                object.vk_global_uniform_memory = nullptr;
+                object.vk_model_uniform_buffer = VK_NULL_HANDLE;
+                object.vk_model_uniform_buffer_allocation = VK_NULL_HANDLE;
+                object.vk_model_uniform_memory = nullptr;
             }
         }
 
@@ -728,31 +843,38 @@ namespace application {
         ImGui::SliderFloat("Far", &ui_camera_far, 10.0f, 500.0f);
 
         ImGui::Separator();
-
         ImGui::Text("Camera");
         ImGui::SliderFloat3("Camera position", ui_camera_position, -10, 10);
-        // Ограничиваем pitch +-89, иначе forward становится параллелен up=(0,1,0) и lookAt вырождается
         ImGui::SliderFloat("Camera yaw (deg)", &ui_camera_yaw_deg, -180, 180);
         ImGui::SliderFloat("Camera pitch (deg)", &ui_camera_pitch_deg, -89, 89);
 
         ImGui::Separator();
+        ImGui::Text("Scene lighting");
+        ImGui::SliderFloat("Ambient strength", &ui_ambient_strength, 0, 1);
+        ImGui::ColorEdit3("Ambient color", ui_ambient_color);
+        ImGui::SliderFloat3("Dir light direction", ui_dir_direction, -1, 1);
+        ImGui::ColorEdit3("Dir light color", ui_dir_color);
+        ImGui::SliderFloat("Dir light intensity", &ui_dir_intensity, 0, 5);
 
+        ImGui::Separator();
+        ImGui::Text("Material");
+        ImGui::ColorEdit3("Albedo", ui_albedo);
+        ImGui::ColorEdit3("Specular color", ui_specular_color);
+        ImGui::SliderFloat("Shininess", &ui_shininess, 1, 256);
+
+        ImGui::Separator();
+        ImGui::Text("Animation");
         ImGui::Checkbox("Play animation", &ui_playing);
         ImGui::SliderFloat("Speed", &ui_anim_speed, 0, 5);
         ImGui::SliderFloat("Path radius", &ui_path_radius, 0, 5);
         ImGui::SliderFloat("Path height", &ui_path_height, 0, 2);
 
         ImGui::Separator();
-
         ImGui::BeginDisabled(ui_playing);
         ImGui::SliderFloat3("Position", ui_position, -5, 5);
         ImGui::EndDisabled();
-
         ImGui::SliderFloat3("Rotation (deg)", ui_rotation, -180, 180);
         ImGui::SliderFloat3("Scale", ui_scale, 0.1, 5);
-
-        ImGui::Separator();
-        ImGui::ColorEdit3("Object color", ui_color);
 
         ImGui::End();
 
@@ -814,7 +936,6 @@ namespace application {
             ui_camera_position[1],
             ui_camera_position[2],
         };
-
         const math::Vec3 target = {
             camera_pos.x + forward.x,
             camera_pos.y + forward.y,
@@ -825,33 +946,66 @@ namespace application {
 
         math::Mat4 proj;
         if (ui_use_perspective) {
-            proj = math::Mat4::perspective(ui_fov_deg * deg2rad, aspect, ui_camera_near, ui_camera_far);
+            proj = math::Mat4::perspective(
+                ui_fov_deg * deg2rad, aspect,
+                ui_camera_near, ui_camera_far
+            );
         } else {
             const float half_h = ui_ortho_size;
             const float half_w = half_h * aspect;
-            proj = math::Mat4::ortho(-half_w, half_w, half_h, -half_h, ui_camera_near, ui_camera_far);
+            proj = math::Mat4::ortho(
+                -half_w, half_w,
+                half_h, -half_h,
+                ui_camera_near, ui_camera_far
+            );
         }
 
-        auto &cone_uniform_memory = objects[Figure::Cone].vk_global_uniform_memory;
-        auto &cube_uniform_memory = objects[Figure::Cube].vk_global_uniform_memory;
+        vk_scene_uniform_memory->view = view;
+        vk_scene_uniform_memory->proj = proj;
 
-        cone_uniform_memory->model = cone_model;
-        cone_uniform_memory->view = view;
-        cone_uniform_memory->proj = proj;
+        vk_scene_uniform_memory->cameraPos[0] = camera_pos.x;
+        vk_scene_uniform_memory->cameraPos[1] = camera_pos.y;
+        vk_scene_uniform_memory->cameraPos[2] = camera_pos.z;
 
-        cube_uniform_memory->model = cube_model;
-        cube_uniform_memory->view = view;
-        cube_uniform_memory->proj = proj;
+        vk_scene_uniform_memory->ambientStrength = ui_ambient_strength;
+        vk_scene_uniform_memory->ambientColor[0] = ui_ambient_color[0];
+        vk_scene_uniform_memory->ambientColor[1] = ui_ambient_color[1];
+        vk_scene_uniform_memory->ambientColor[2] = ui_ambient_color[2];
+        vk_scene_uniform_memory->_padding0 = 0.0f;
 
-        cube_uniform_memory->color[0] = ui_color[0];
-        cube_uniform_memory->color[1] = ui_color[1];
-        cube_uniform_memory->color[2] = ui_color[2];
-        cube_uniform_memory->color[3] = 1;
+        vk_scene_uniform_memory->directional.direction[0] = ui_dir_direction[0];
+        vk_scene_uniform_memory->directional.direction[1] = ui_dir_direction[1];
+        vk_scene_uniform_memory->directional.direction[2] = ui_dir_direction[2];
+        vk_scene_uniform_memory->directional.intensity = ui_dir_intensity;
+        vk_scene_uniform_memory->directional.color[0] = ui_dir_color[0];
+        vk_scene_uniform_memory->directional.color[1] = ui_dir_color[1];
+        vk_scene_uniform_memory->directional.color[2] = ui_dir_color[2];
+        vk_scene_uniform_memory->directional._padding = 0.0f;
 
-        cone_uniform_memory->color[0] = ui_color[0];
-        cone_uniform_memory->color[1] = ui_color[1];
-        cone_uniform_memory->color[2] = ui_color[2];
-        cone_uniform_memory->color[3] = 1;
+        {
+            auto &mm = objects[Figure::Cone].vk_model_uniform_memory;
+            mm->model = cone_model;
+            mm->albedo[0] = ui_albedo[0];
+            mm->albedo[1] = ui_albedo[1];
+            mm->albedo[2] = ui_albedo[2];
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding = 0.0f;
+        }
+        {
+            auto &mm = objects[Figure::Cube].vk_model_uniform_memory;
+            mm->model = cube_model;
+            mm->albedo[0] = ui_albedo[0];
+            mm->albedo[1] = ui_albedo[1];
+            mm->albedo[2] = ui_albedo[2];
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding = 0.0f;
+        }
     }
 
     void render(const graphics::internal::FrameData &fd) {
@@ -890,7 +1044,6 @@ namespace application {
             .minDepth = 0,
             .maxDepth = 1,
         };
-
         vkCmdSetViewport(fd.command_buffer, 0, 1, &viewport);
 
         const VkRect2D scissor = {.extent = context.swapchain_extent};
@@ -903,19 +1056,24 @@ namespace application {
             vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &object.vk_vertex_buffer, &device_size);
             vkCmdBindIndexBuffer(fd.command_buffer, object.vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
+            const VkDescriptorSet descriptor_sets[2] = {
+                vk_scene_descriptor_set,
+                object.vk_model_descriptor_set,
+            };
             vkCmdBindDescriptorSets(
                 fd.command_buffer,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
                 vk_cone_layout,
                 0,
-                1,
-                &object.vk_descriptor_set,
+                2,
+                descriptor_sets,
                 0,
                 nullptr
             );
 
             vkCmdDrawIndexed(fd.command_buffer, object.vk_index_count, 1, 0, 0, 0);
         }
+
         vkCmdEndRenderPass(fd.command_buffer);
         vkEndCommandBuffer(fd.command_buffer);
     }
