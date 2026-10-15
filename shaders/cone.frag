@@ -123,10 +123,6 @@ vec3 point_accum = vec3(0.0);
         const float epsilon = max(cos_outer - cos_inner, 1e-4);
         float spotAttenuation = clamp((theta - cos_inner) / epsilon, 0.0, 1.0);
 
-        // Если theta меньше cos_outer — вне конуса, свет = 0.
-        // Если theta больше cos_inner — внутри ядра, свет = 1.
-        // Между ними — линейный градиент.
-
         const float attenuation = 1.0 / dist2;
 
         const vec3  H      = normalize(L + V);

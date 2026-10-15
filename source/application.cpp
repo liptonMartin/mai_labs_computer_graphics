@@ -77,6 +77,13 @@ namespace application {
 
     static_assert(sizeof(ModelUniforms) == 96);
 
+    struct LightVizPushConstants {
+        math::Mat4 mvp; // offset 0
+        float color[4]; // offset 64
+    };
+
+    static_assert(sizeof(LightVizPushConstants) == 80);
+
     struct Vertex {
         float pos[3];
         float color[3];
@@ -393,6 +400,57 @@ namespace application {
         return indexes;
     }
 
+    std::vector<Vertex> make_line_cone_vertexes(const int segments) {
+        std::vector<Vertex> arr;
+        arr.reserve(segments * 4);
+
+        for (int i = 0; i < segments; ++i) {
+            const float a0 = 2.0f * std::numbers::pi_v<float> * static_cast<float>(i)
+                             / static_cast<float>(segments);
+            const float a1 = 2.0f * std::numbers::pi_v<float> * static_cast<float>(i + 1)
+                             / static_cast<float>(segments);
+
+            const float x0 = std::cos(a0), y0 = std::sin(a0);
+            const float x1 = std::cos(a1), y1 = std::sin(a1);
+
+            // линия apex -> точка на окружности
+            arr.push_back(Vertex{{0.0f, 0.0f, 0.0f}, {1, 1, 1}, {0, 0, 0}});
+            arr.push_back(Vertex{{x0, y0, 1.0f}, {1, 1, 1}, {0, 0, 0}});
+
+            // линия по окружности
+            arr.push_back(Vertex{{x0, y0, 1.0f}, {1, 1, 1}, {0, 0, 0}});
+            arr.push_back(Vertex{{x1, y1, 1.0f}, {1, 1, 1}, {0, 0, 0}});
+        }
+
+        return arr;
+    }
+
+    math::Mat4 rotation_align_z_with(const math::Vec3 &dir) {
+        const math::Vec3 z = math::Vec3::normalize(dir);
+        const math::Vec3 up = (std::abs(z.y) < 0.99f)
+                                  ? math::Vec3{0, 1, 0}
+                                  : math::Vec3{1, 0, 0};
+        const math::Vec3 x = math::Vec3::normalize(math::Vec3::cross(up, z));
+        const math::Vec3 y = math::Vec3::cross(z, x);
+
+        math::Mat4 m{};
+        // column 0 = x, column 1 = y, column 2 = z
+        m.matrix[0] = x.x;
+        m.matrix[1] = x.y;
+        m.matrix[2] = x.z;
+        m.matrix[4] = y.x;
+        m.matrix[5] = y.y;
+        m.matrix[6] = y.z;
+        m.matrix[8] = z.x;
+        m.matrix[9] = z.y;
+        m.matrix[10] = z.z;
+        m.matrix[12] = 0;
+        m.matrix[13] = 0;
+        m.matrix[14] = 0;
+        m.matrix[15] = 1;
+        return m;
+    }
+
     math::Vec3 create_animated_position_cone(const float time, const float radius, const float y_amplitude) {
         const float px = radius * std::sin(time);
         const float pz = radius * std::sin(time) * std::cos(time) * 2;
@@ -448,6 +506,21 @@ namespace application {
 
         VkPipelineLayout vk_cone_layout = VK_NULL_HANDLE;
         VkPipeline vk_cone_pipeline = VK_NULL_HANDLE;
+
+        VkShaderModule vk_light_viz_vertex_shader = VK_NULL_HANDLE;
+        VkShaderModule vk_light_viz_fragment_shader = VK_NULL_HANDLE;
+
+        VkPipelineLayout vk_light_viz_layout = VK_NULL_HANDLE;
+        VkPipeline vk_light_cube_pipeline = VK_NULL_HANDLE; // TRIANGLE_LIST
+        VkPipeline vk_light_line_pipeline = VK_NULL_HANDLE; // LINE_LIST
+
+        VkBuffer vk_line_cone_vertex_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_line_cone_vertex_buffer_allocation = VK_NULL_HANDLE;
+        uint32_t vk_line_cone_vertex_count = 0;
+
+        bool ui_show_point_lights = true;
+        bool ui_show_spot_lights = true;
+        bool ui_show_spot_cones = true;
 
         VkDescriptorSetLayout vk_scene_descriptor_set_layout = VK_NULL_HANDLE;
         VkDescriptorSetLayout vk_model_descriptor_set_layout = VK_NULL_HANDLE;
@@ -856,12 +929,214 @@ namespace application {
                 return false;
         }
 
+
+        vk_light_viz_vertex_shader = load_shader_module("../shaders/light_viz.vert.spv");
+        vk_light_viz_fragment_shader = load_shader_module("../shaders/light_viz.frag.spv");
+        if (vk_light_viz_vertex_shader == VK_NULL_HANDLE || vk_light_viz_fragment_shader == VK_NULL_HANDLE) {
+            std::cerr << "Failed to load light viz shaders\n";
+            return false;
+        }
+
+        // --- Line cone vertex buffer ---
+        {
+            const auto line_verts = make_line_cone_vertexes(24);
+            vk_line_cone_vertex_count = static_cast<uint32_t>(line_verts.size());
+
+            const VkBufferCreateInfo bi = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = sizeof(Vertex) * line_verts.size(),
+                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+            constexpr VmaAllocationCreateInfo ai = {
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+            VmaAllocationInfo out{};
+            if (vmaCreateBuffer(context.allocator, &bi, &ai,
+                                &vk_line_cone_vertex_buffer,
+                                &vk_line_cone_vertex_buffer_allocation,
+                                &out) != VK_SUCCESS) {
+                std::cerr << "Failed to create line cone vertex buffer\n";
+                return false;
+            }
+            std::memcpy(out.pMappedData, line_verts.data(), sizeof(Vertex) * line_verts.size());
+        }
+
+        // --- Pipeline layout с push-constant ---
+        {
+            const VkPushConstantRange push_range = {
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                .offset = 0,
+                .size = sizeof(LightVizPushConstants),
+            };
+            const VkPipelineLayoutCreateInfo pli = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = 0,
+                .pSetLayouts = nullptr,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &push_range,
+            };
+            if (vkCreatePipelineLayout(context.device, &pli, nullptr, &vk_light_viz_layout) != VK_SUCCESS) {
+                std::cerr << "Failed to create light viz pipeline layout\n";
+                return false;
+            }
+        }
+
+        // --- Общий vertex input state ---
+        const VkVertexInputBindingDescription viz_bindings[1] = {
+            {.binding = 0, .stride = sizeof(Vertex), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX},
+        };
+        const VkVertexInputAttributeDescription viz_attrs[1] = {
+            {
+                .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = offsetof(Vertex, pos)
+            },
+        };
+        const VkPipelineVertexInputStateCreateInfo viz_vertex_input = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = viz_bindings,
+            .vertexAttributeDescriptionCount = 1,
+            .pVertexAttributeDescriptions = viz_attrs,
+        };
+
+        const VkPipelineShaderStageCreateInfo viz_stages[2] = {
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vk_light_viz_vertex_shader, .pName = "main"
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = vk_light_viz_fragment_shader, .pName = "main"
+            },
+        };
+
+        const VkPipelineViewportStateCreateInfo viz_viewport = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .viewportCount = 1, .scissorCount = 1,
+        };
+        const VkPipelineRasterizationStateCreateInfo viz_raster = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_NONE, // кубик рисуем без culling
+            .frontFace = VK_FRONT_FACE_CLOCKWISE,
+            .lineWidth = 1.0f,
+        };
+        const VkPipelineMultisampleStateCreateInfo viz_msaa = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        };
+        const VkPipelineColorBlendAttachmentState viz_blend_att = {
+            .colorWriteMask = 0xF,
+        };
+        const VkPipelineColorBlendStateCreateInfo viz_blend = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .attachmentCount = 1, .pAttachments = &viz_blend_att,
+        };
+        const VkDynamicState viz_dyn_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        const VkPipelineDynamicStateCreateInfo viz_dyn = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .dynamicStateCount = 2, .pDynamicStates = viz_dyn_states,
+        };
+
+        // Solid cube pipeline (TRIANGLE_LIST, depth write on)
+        {
+            const VkPipelineInputAssemblyStateCreateInfo ia = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            };
+            const VkPipelineDepthStencilStateCreateInfo ds = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
+                .depthCompareOp = VK_COMPARE_OP_LESS,
+            };
+            const VkGraphicsPipelineCreateInfo gpci = {
+                .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                .stageCount = 2, .pStages = viz_stages,
+                .pVertexInputState = &viz_vertex_input,
+                .pInputAssemblyState = &ia,
+                .pViewportState = &viz_viewport,
+                .pRasterizationState = &viz_raster,
+                .pMultisampleState = &viz_msaa,
+                .pDepthStencilState = &ds,
+                .pColorBlendState = &viz_blend,
+                .pDynamicState = &viz_dyn,
+                .layout = vk_light_viz_layout,
+                .renderPass = context.render_pass, .subpass = 0,
+            };
+            if (vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1, &gpci, nullptr,
+                                          &vk_light_cube_pipeline) != VK_SUCCESS) {
+                std::cerr << "Failed to create light cube pipeline\n";
+                return false;
+            }
+        }
+
+        // Line pipeline (LINE_LIST, depth write off — чтобы не «спорить» с кубиком)
+        {
+            const VkPipelineInputAssemblyStateCreateInfo ia = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                .topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+            };
+            const VkPipelineDepthStencilStateCreateInfo ds = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_FALSE,
+                .depthCompareOp = VK_COMPARE_OP_LESS,
+            };
+            const VkGraphicsPipelineCreateInfo gpci = {
+                .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                .stageCount = 2, .pStages = viz_stages,
+                .pVertexInputState = &viz_vertex_input,
+                .pInputAssemblyState = &ia,
+                .pViewportState = &viz_viewport,
+                .pRasterizationState = &viz_raster,
+                .pMultisampleState = &viz_msaa,
+                .pDepthStencilState = &ds,
+                .pColorBlendState = &viz_blend,
+                .pDynamicState = &viz_dyn,
+                .layout = vk_light_viz_layout,
+                .renderPass = context.render_pass, .subpass = 0,
+            };
+            if (vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1, &gpci, nullptr,
+                                          &vk_light_line_pipeline) != VK_SUCCESS) {
+                std::cerr << "Failed to create light line pipeline\n";
+                return false;
+            }
+        }
+
         return true;
     }
 
     void shutdown() {
         auto &context = graphics::internal::context;
         vkQueueWaitIdle(context.graphics_queue);
+
+        if (vk_light_cube_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(context.device, vk_light_cube_pipeline, nullptr);
+            vk_light_cube_pipeline = VK_NULL_HANDLE;
+        }
+        if (vk_light_line_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(context.device, vk_light_line_pipeline, nullptr);
+            vk_light_line_pipeline = VK_NULL_HANDLE;
+        }
+        if (vk_light_viz_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(context.device, vk_light_viz_layout, nullptr);
+            vk_light_viz_layout = VK_NULL_HANDLE;
+        }
+        if (vk_light_viz_vertex_shader != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(context.device, vk_light_viz_vertex_shader, nullptr);
+            vk_light_viz_vertex_shader = VK_NULL_HANDLE;
+        }
+        if (vk_light_viz_fragment_shader != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(context.device, vk_light_viz_fragment_shader, nullptr);
+            vk_light_viz_fragment_shader = VK_NULL_HANDLE;
+        }
+        if (vk_line_cone_vertex_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, vk_line_cone_vertex_buffer,
+                             vk_line_cone_vertex_buffer_allocation);
+            vk_line_cone_vertex_buffer = VK_NULL_HANDLE;
+            vk_line_cone_vertex_buffer_allocation = VK_NULL_HANDLE;
+        }
 
         if (vk_cone_pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(context.device, vk_cone_pipeline, nullptr);
@@ -953,6 +1228,12 @@ namespace application {
         last_time = time;
 
         ImGui::Begin("Controls");
+
+        ImGui::Separator();
+        ImGui::Text("Light visualization");
+        ImGui::Checkbox("Show point lights", &ui_show_point_lights);
+        ImGui::Checkbox("Show spot lights", &ui_show_spot_lights);
+        ImGui::Checkbox("Show spot cones", &ui_show_spot_cones);
 
         ImGui::Text("Projection");
         ImGui::Checkbox("Perspective projection", &ui_use_perspective);
@@ -1299,6 +1580,87 @@ namespace application {
             );
 
             vkCmdDrawIndexed(fd.command_buffer, object.vk_index_count, 1, 0, 0, 0);
+        }
+        if (ui_show_point_lights || ui_show_spot_lights || ui_show_spot_cones) {
+            const math::Mat4 vp = vk_scene_uniform_memory->proj * vk_scene_uniform_memory->view;
+
+            const VkDeviceSize offset0 = 0;
+            constexpr VkShaderStageFlags push_flags =
+                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+            if ((ui_show_point_lights && !point_lights.empty()) ||
+                (ui_show_spot_lights && !spot_lights.empty())) {
+                vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  vk_light_cube_pipeline);
+
+                const auto &cube = objects[Figure::Cube];
+                vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &cube.vk_vertex_buffer, &offset0);
+                vkCmdBindIndexBuffer(fd.command_buffer, cube.vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+                constexpr float viz_cube_half = 0.15f;
+                constexpr float original_cube_half = 0.3f;
+                const float viz_scale = viz_cube_half / original_cube_half;
+
+                const math::Mat4 cube_scale = math::Mat4::scale(viz_scale, viz_scale, viz_scale);
+
+                auto draw_cube = [&](float x, float y, float z, const float col[3]) {
+                    LightVizPushConstants pc{};
+                    pc.mvp = vp * math::Mat4::translate(x, y, z) * cube_scale;
+                    pc.color[0] = col[0];
+                    pc.color[1] = col[1];
+                    pc.color[2] = col[2];
+                    pc.color[3] = 1.0f;
+                    vkCmdPushConstants(fd.command_buffer, vk_light_viz_layout,
+                                       push_flags, 0, sizeof(pc), &pc);
+                    vkCmdDrawIndexed(fd.command_buffer, cube.vk_index_count, 1, 0, 0, 0);
+                };
+
+                if (ui_show_point_lights) {
+                    for (const auto &pl: point_lights) {
+                        draw_cube(pl.position[0], pl.position[1], pl.position[2], pl.color);
+                    }
+                }
+                if (ui_show_spot_lights) {
+                    for (const auto &sl: spot_lights) {
+                        draw_cube(sl.position[0], sl.position[1], sl.position[2], sl.color);
+                    }
+                }
+            }
+
+            if (ui_show_spot_cones && !spot_lights.empty()) {
+                vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  vk_light_line_pipeline);
+                vkCmdBindVertexBuffers(fd.command_buffer, 0, 1,
+                                       &vk_line_cone_vertex_buffer, &offset0);
+
+                for (const auto &sl: spot_lights) {
+                    const math::Vec3 dir = math::Vec3::normalize({
+                        sl.direction[0], sl.direction[1], sl.direction[2]
+                    });
+
+                    const math::Mat4 rot = rotation_align_z_with(dir);
+
+                    const float len = (sl.radius > 0.0f) ? sl.radius : 2.5f;
+
+                    const float tan_outer = std::tan(sl.outerAngle);
+                    const float r_world = tan_outer * len;
+
+                    const math::Mat4 world =
+                            math::Mat4::translate(sl.position[0], sl.position[1], sl.position[2])
+                            * rot
+                            * math::Mat4::scale(r_world, r_world, len);
+
+                    LightVizPushConstants pc{};
+                    pc.mvp = vp * world;
+                    pc.color[0] = 1.0f;
+                    pc.color[1] = 1.0f;
+                    pc.color[2] = 1.0f;
+                    pc.color[3] = 1.0f;
+                    vkCmdPushConstants(fd.command_buffer, vk_light_viz_layout,
+                                       push_flags, 0, sizeof(pc), &pc);
+                    vkCmdDraw(fd.command_buffer, vk_line_cone_vertex_count, 1, 0, 0);
+                }
+            }
         }
 
         vkCmdEndRenderPass(fd.command_buffer);
