@@ -28,6 +28,7 @@ namespace application {
     struct Vertex {
         float pos[3];
         float color[3];
+        float normal[3];
     };
 
     struct Object {
@@ -184,17 +185,56 @@ namespace application {
 
     std::vector<Vertex> make_cone_vertexes(const int n) {
         std::vector<Vertex> array;
-        array.reserve(n + 2);
+        array.reserve(2 * n + 2);
 
         constexpr float apex_y = 1;
         constexpr float base_y = -1;
-        constexpr float radius = 0.6;
+        constexpr float radius = 0.6f;
+        const float height = apex_y - base_y; // = 2
 
+        // 0: вершина конуса
         {
             const auto color = color_from_pos(0, apex_y, 0);
-            array.push_back(Vertex{{0, apex_y, 0}, {color[0], color[1], color[2]}});
+            array.push_back(Vertex{
+                {0, apex_y, 0},
+                {color[0], color[1], color[2]},
+                {0, 1, 0}
+            });
         }
 
+        // 1..n: боковая поверхность (вершины на окружности основания)
+        for (int i = 0; i < n; ++i) {
+            const float step = 2 * std::numbers::pi_v<float> / static_cast<float>(n);
+            const float corner = static_cast<float>(i) * step;
+
+            const float x = std::cos(corner) * radius;
+            const float z = std::sin(corner) * radius;
+
+            // Аналитическая нормаль боковой поверхности
+            const float nx = height * std::cos(corner);
+            const float ny = radius;
+            const float nz = height * std::sin(corner);
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+
+            const auto color = color_from_pos(x, base_y, z);
+            array.push_back(Vertex{
+                {x, base_y, z},
+                {color[0], color[1], color[2]},
+                {nx / len, ny / len, nz / len}
+            });
+        }
+
+        // n+1: центр основания
+        {
+            const auto color = color_from_pos(0, base_y, 0);
+            array.push_back(Vertex{
+                {0, base_y, 0},
+                {color[0], color[1], color[2]},
+                {0, -1, 0}
+            });
+        }
+
+        // n+2..2n+1: дубли вершин окружности для плоского основания
         for (int i = 0; i < n; ++i) {
             const float step = 2 * std::numbers::pi_v<float> / static_cast<float>(n);
             const float corner = static_cast<float>(i) * step;
@@ -203,12 +243,11 @@ namespace application {
             const float z = std::sin(corner) * radius;
 
             const auto color = color_from_pos(x, base_y, z);
-            array.push_back(Vertex{{x, base_y, z}, {color[0], color[1], color[2]}});
-        }
-
-        {
-            const auto color = color_from_pos(0, base_y, 0);
-            array.push_back(Vertex{{0, base_y, 0}, {color[0], color[1], color[2]}});
+            array.push_back(Vertex{
+                {x, base_y, z},
+                {color[0], color[1], color[2]},
+                {0, -1, 0}
+            });
         }
 
         return array;
@@ -219,51 +258,88 @@ namespace application {
         indexes.reserve(n * 6);
 
         const uint32_t apex = 0;
-        const uint32_t center = n + 1;
-        for (int i = 1; i <= n; ++i) {
-            const uint32_t current = i;
-            const uint32_t next = 1 + i % n;
+        const uint32_t base_center = n + 1;
 
+        for (int i = 0; i < n; ++i) {
+            // Боковая поверхность
+            const uint32_t current = 1 + i;
+            const uint32_t next = 1 + (i + 1) % n;
             indexes.insert(indexes.end(), {apex, current, next});
-            indexes.insert(indexes.end(), {center, current, next});
+
+            // Основание (плоское, с нормалью вниз)
+            const uint32_t base_current = n + 2 + i;
+            const uint32_t base_next = n + 2 + (i + 1) % n;
+            indexes.insert(indexes.end(), {base_center, base_current, base_next});
         }
 
         return indexes;
     }
 
     std::vector<Vertex> make_cube_vertexes() {
-        std::vector<Vertex> array;
-        array.reserve(8);
+        constexpr float s = 0.3f;
+        const std::array<float, 3> red = {1, 0, 0};
+        const std::array<float, 3> green = {0, 1, 0};
 
-        array = {
-            {{0.3, 0.3, 0.3}, {1, 0, 0}},
-            {{0.3, 0.3, -0.3}, {1, 0, 0}},
-            {{-0.3, 0.3, 0.3}, {1, 0, 0}},
-            {{-0.3, 0.3, -0.3}, {1, 0, 0}},
-            {{0.3, -0.3, 0.3}, {0, 1, 0}},
-            {{0.3, -0.3, -0.3}, {0, 1, 0}},
-            {{-0.3, -0.3, 0.3}, {0, 1, 0}},
-            {{-0.3, -0.3, -0.3}, {0, 1, 0}},
+        std::vector<Vertex> array;
+        array.reserve(24);
+
+        auto push = [&](float x, float y, float z,
+                        const std::array<float, 3> &c,
+                        const std::array<float, 3> &n) {
+            array.push_back(Vertex{{x, y, z}, {c[0], c[1], c[2]}, {n[0], n[1], n[2]}});
         };
+
+        // FRONT
+        push(s, s, s, red, {0, 0, 1}); // 0 TR
+        push(-s, s, s, red, {0, 0, 1}); // 1 TL
+        push(-s, -s, s, green, {0, 0, 1}); // 2 BL
+        push(s, -s, s, green, {0, 0, 1}); // 3 BR
+
+        // BACK
+        push(-s, s, -s, red, {0, 0, -1}); // 4
+        push(s, s, -s, red, {0, 0, -1}); // 5
+        push(s, -s, -s, green, {0, 0, -1}); // 6
+        push(-s, -s, -s, green, {0, 0, -1}); // 7
+
+        // RIGHT
+        push(s, s, -s, red, {1, 0, 0}); // 8
+        push(s, s, s, red, {1, 0, 0}); // 9
+        push(s, -s, s, green, {1, 0, 0}); // 10
+        push(s, -s, -s, green, {1, 0, 0}); // 11
+
+        // LEFT
+        push(-s, s, s, red, {-1, 0, 0}); // 12
+        push(-s, s, -s, red, {-1, 0, 0}); // 13
+        push(-s, -s, -s, green, {-1, 0, 0}); // 14
+        push(-s, -s, s, green, {-1, 0, 0}); // 15
+
+        // TOP
+        push(s, s, -s, red, {0, 1, 0}); // 16
+        push(-s, s, -s, red, {0, 1, 0}); // 17
+        push(-s, s, s, red, {0, 1, 0}); // 18
+        push(s, s, s, red, {0, 1, 0}); // 19
+
+        // BOTTOM
+        push(s, -s, s, green, {0, -1, 0}); // 20
+        push(-s, -s, s, green, {0, -1, 0}); // 21
+        push(-s, -s, -s, green, {0, -1, 0}); // 22
+        push(s, -s, -s, green, {0, -1, 0}); // 23
 
         return array;
     }
 
     std::vector<uint32_t> make_cube_indexes() {
         std::vector<uint32_t> indexes;
-        indexes.reserve(6 * 2 * 3); // 6 граней, 2 треугольника, 3 вершины в каждом треугольнике
+        indexes.reserve(6 * 2 * 3);
 
-        indexes = {
-            0, 1, 2, 1, 3, 2, // нижняя грань
-            0, 4, 1, 5, 1, 4, // передняя грань
-            1, 5, 3, 5, 7, 3, // правая грань
-            3, 7, 2, 2, 7, 6, // задняя грань
-            0, 2, 4, 2, 6, 4, // левая грань
-            4, 7, 5, 4, 6, 7, // верхняя грань
-        };
+        for (uint32_t face = 0; face < 6; ++face) {
+            const uint32_t b = face * 4;
+            indexes.insert(indexes.end(), {b + 0, b + 2, b + 1, b + 0, b + 3, b + 2});
+        }
 
         return indexes;
     }
+
 
     math::Vec3 create_animated_position_cone(const float time, const float radius, const float y_amplitude) {
         const float px = radius * std::sin(time);
@@ -387,7 +463,7 @@ namespace application {
             },
         };
 
-        const VkVertexInputAttributeDescription vertex_attributes[2] = {
+        const VkVertexInputAttributeDescription vertex_attributes[3] = {
             {
                 .location = 0,
                 .binding = 0,
@@ -398,8 +474,14 @@ namespace application {
                 .location = 1,
                 .binding = 0,
                 .format = VK_FORMAT_R32G32B32_SFLOAT,
-                .offset = offsetof(Vertex, color)
-            }
+                .offset = offsetof(Vertex, color),
+            },
+            {
+                .location = 2,
+                .binding = 0,
+                .format = VK_FORMAT_R32G32B32_SFLOAT,
+                .offset = offsetof(Vertex, normal),
+            },
         };
 
         const VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info = {
