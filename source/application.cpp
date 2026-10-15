@@ -401,6 +401,12 @@ namespace application {
         VkDescriptorPool vk_descriptor_pool = VK_NULL_HANDLE;
 
         bool ui_use_perspective = true;
+        float ui_camera_position[3] = {0, 0, 4}; // стартовая — как раньше (0,0,4)
+        float ui_camera_yaw_deg = 0; // поворот вокруг Y
+        float ui_camera_pitch_deg = 0; // наклон вокруг X
+        float ui_camera_near = 0.1;
+        float ui_camera_far = 100;
+
         float ui_fov_deg = 60; // угол обзора по вертикали
         float ui_ortho_size = 1.5;
         float ui_position[3] = {0, 0, 0};
@@ -711,12 +717,23 @@ namespace application {
 
         ImGui::Begin("Controls");
 
+        ImGui::Text("Projection");
         ImGui::Checkbox("Perspective projection", &ui_use_perspective);
         if (ui_use_perspective) {
             ImGui::SliderFloat("FOV (deg)", &ui_fov_deg, 10, 120);
         } else {
             ImGui::SliderFloat("Ortho half-height", &ui_ortho_size, 0.5, 10);
         }
+        ImGui::SliderFloat("Near", &ui_camera_near, 0.01f, 5.0f);
+        ImGui::SliderFloat("Far", &ui_camera_far, 10.0f, 500.0f);
+
+        ImGui::Separator();
+
+        ImGui::Text("Camera");
+        ImGui::SliderFloat3("Camera position", ui_camera_position, -10, 10);
+        // Ограничиваем pitch +-89, иначе forward становится параллелен up=(0,1,0) и lookAt вырождается
+        ImGui::SliderFloat("Camera yaw (deg)", &ui_camera_yaw_deg, -180, 180);
+        ImGui::SliderFloat("Camera pitch (deg)", &ui_camera_pitch_deg, -89, 89);
 
         ImGui::Separator();
 
@@ -778,21 +795,41 @@ namespace application {
 
         const math::Mat4 cube_model = math::Mat4::translate(pos_cube.x, pos_cube.y, pos_cube.z);
 
-        const math::Mat4 view = math::Mat4::lookAt(
-            {0, 0, 4},
-            {0, 0, 0},
-            {0, 1, 0}
-        );
+        const float yaw_rad = ui_camera_yaw_deg * deg2rad;
+        const float pitch_rad = ui_camera_pitch_deg * deg2rad;
+
+        const float cos_pitch = std::cos(pitch_rad);
+        const float sin_pitch = std::sin(pitch_rad);
+        const float cos_yaw = std::cos(yaw_rad);
+        const float sin_yaw = std::sin(yaw_rad);
+
+        const math::Vec3 forward = {
+            sin_yaw * cos_pitch,
+            sin_pitch,
+            -cos_yaw * cos_pitch,
+        };
+
+        const math::Vec3 camera_pos = {
+            ui_camera_position[0],
+            ui_camera_position[1],
+            ui_camera_position[2],
+        };
+
+        const math::Vec3 target = {
+            camera_pos.x + forward.x,
+            camera_pos.y + forward.y,
+            camera_pos.z + forward.z,
+        };
+
+        const math::Mat4 view = math::Mat4::lookAt(camera_pos, target, {0, 1, 0});
 
         math::Mat4 proj;
         if (ui_use_perspective) {
-            proj = math::Mat4::perspective(ui_fov_deg * deg2rad, aspect, 0.1, 100);
+            proj = math::Mat4::perspective(ui_fov_deg * deg2rad, aspect, ui_camera_near, ui_camera_far);
         } else {
             const float half_h = ui_ortho_size;
             const float half_w = half_h * aspect;
-            // top = -half_h, bottom = +half_h — это даёт тот же Y-flip,
-            // что и в perspective (потому что ortho у нас не флипает сам)
-            proj = math::Mat4::ortho(-half_w, half_w, half_h, -half_h, 0.1, 100);
+            proj = math::Mat4::ortho(-half_w, half_w, half_h, -half_h, ui_camera_near, ui_camera_far);
         }
 
         auto &cone_uniform_memory = objects[Figure::Cone].vk_global_uniform_memory;
