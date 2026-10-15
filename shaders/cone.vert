@@ -39,5 +39,5 @@ void main() {
     out_world_pos = world_pos.xyz;
     out_normal    = transpose(inverse(mat3(model_data.model))) * in_normal;
 
-    out_color = in_color * model_data.albedo;
+    out_color = in_color;
 }

@@ -548,7 +548,7 @@ namespace application {
 
         float ui_dir_direction[3] = {0.4f, -1.0f, -0.5f};
         float ui_dir_color[3] = {1, 1, 1};
-        float ui_dir_intensity = 0;
+        float ui_dir_intensity = 1;
 
         float ui_albedo[3] = {1, 1, 1};
         float ui_specular_color[3] = {1, 1, 1};
