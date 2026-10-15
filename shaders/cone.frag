@@ -64,25 +64,49 @@ void main() {
 
     const vec3 ambient = scene.ambientStrength * scene.ambientColor * model_data.albedo;
 
-    const vec3 L = normalize(-scene.dir_direction);
-    const vec3 H = normalize(L + V);
-
-    const float NdotL = max(dot(N, L), 0.0);
-    const float NdotH = max(dot(N, H), 0.0);
-
-    const float spec_factor = (NdotL > 0.0) ? pow(NdotH, max(model_data.shininess, 1e-3)) : 0.0;
-
-    const vec3 diffuse  = model_data.albedo * NdotL;
-    const vec3 specular = model_data.specularColor * spec_factor;
-
+    const vec3 Ld = normalize(-scene.dir_direction);
+    const vec3 Hd = normalize(Ld + V);
+    const float NdotLd = max(dot(N, Ld), 0.0);
+    const float NdotHd = max(dot(N, Hd), 0.0);
+    const float spec_d = (NdotLd > 0.0) ? pow(NdotHd, max(model_data.shininess, 1e-3)) : 0.0;
     const vec3 directional =
-        (diffuse + specular) * scene.dir_color * scene.dir_intensity;
+        (model_data.albedo * NdotLd + model_data.specularColor * spec_d)
+        * scene.dir_color * scene.dir_intensity;
 
-    const vec3 final_color = ambient + directional;
+    vec3 point_accum = vec3(0.0);
+    const uint pl_count = min(scene.pointLightCount, uint(pointLights.lights.length()));
+    for (uint i = 0u; i < pl_count; ++i) {
+        const PointLight pl = pointLights.lights[i];
+
+        const vec3  to_light = pl.position - in_world_pos;
+        const float dist2    = max(dot(to_light, to_light), 1e-6);
+        const float dist     = sqrt(dist2);
+        const vec3  L        = to_light / dist;
+
+        const float attenuation = 1.0 / dist2;
+
+        const vec3  H        = normalize(L + V);
+        const float NdotL    = max(dot(N, L), 0.0);
+        const float NdotH    = max(dot(N, H), 0.0);
+        const float spec_p   = (NdotL > 0.0) ? pow(NdotH, max(model_data.shininess, 1e-3)) : 0.0;
+
+        float radius_falloff = 1.0;
+        if (pl.radius > 0.0) {
+            const float t = clamp(1.0 - (dist / pl.radius), 0.0, 1.0);
+            radius_falloff = t * t;
+        }
+
+        const vec3 contribution =
+            (model_data.albedo * NdotL + model_data.specularColor * spec_p)
+            * pl.color * pl.intensity * attenuation * radius_falloff;
+
+        point_accum += contribution;
+    }
+
+    const vec3 final_color = ambient + directional + point_accum;
 
     vec3 dummy = vec3(0.0);
-    if (scene.pointLightCount > 0u) dummy += pointLights.lights[0].color;
-    if (scene.spotLightCount  > 0u) dummy += spotLights.lights[0].color;
+    if (scene.spotLightCount > 0u) dummy += spotLights.lights[0].color;
 
     out_color = vec4(final_color + dummy * 0.0, 1.0);
 }

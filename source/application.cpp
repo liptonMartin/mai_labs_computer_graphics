@@ -983,13 +983,13 @@ namespace application {
         if (ImGui::Button("Add point light")) {
             PointLightUniform pl{};
             pl.position[0] = 0.0f;
-            pl.position[1] = 1.0f;
+            pl.position[1] = 1.5f;
             pl.position[2] = 0.0f;
             pl.color[0] = 1.0f;
-            pl.color[1] = 0.4f;
-            pl.color[2] = 0.2f;
-            pl.intensity = 1.0f;
-            pl.radius = 4.0f;
+            pl.color[1] = 0.6f;
+            pl.color[2] = 0.3f;
+            pl.intensity = 8.0f;
+            pl.radius = 6.0f;
             point_lights.push_back(pl);
         }
         ImGui::SameLine();
@@ -1001,8 +1001,8 @@ namespace application {
             if (ImGui::TreeNode("pl", "Point light #%d", static_cast<int>(i))) {
                 ImGui::SliderFloat3("Position", point_lights[i].position, -10.0f, 10.0f);
                 ImGui::ColorEdit3("Color", point_lights[i].color);
-                ImGui::SliderFloat("Intensity", &point_lights[i].intensity, 0.0f, 10.0f);
-                ImGui::SliderFloat("Radius", &point_lights[i].radius, 0.0f, 20.0f);
+                ImGui::SliderFloat("Intensity", &point_lights[i].intensity, 0.0f, 50.0f);
+                ImGui::SliderFloat("Radius", &point_lights[i].radius, 0.1f, 20.0f);
                 ImGui::TreePop();
             }
             ImGui::PopID();
