@@ -120,8 +120,8 @@ vec3 point_accum = vec3(0.0);
         const float cos_inner = cos(sl.innerAngle);
         const float cos_outer = cos(sl.outerAngle);
 
-        const float epsilon = max(cos_outer - cos_inner, 1e-4);
-        float spotAttenuation = clamp((theta - cos_inner) / epsilon, 0.0, 1.0);
+        const float epsilon = max(cos_inner - cos_outer, 1e-4);
+        float spotAttenuation = clamp((theta - cos_outer) / epsilon, 0.0, 1.0);
 
         const float attenuation = 1.0 / dist2;
 
