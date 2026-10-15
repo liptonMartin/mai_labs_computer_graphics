@@ -18,40 +18,63 @@ namespace application {
         Cone,
     };
 
-    // =====================================================================
-    //  Scene block (set=0)
-    //  Раскладка std140.  Размеры / смещения подобраны так, чтобы C++
-    //  структура в точности соответствовала GLSL-блоку.
-    // =====================================================================
     struct DirectionalLightUniform {
-        float direction[3];   // offset 0
-        float intensity;      // offset 12
-        float color[3];       // offset 16
-        float _padding;       // offset 28  -> размер 32
+        float direction[3]; // offset 0
+        float intensity; // offset 12
+        float color[3]; // offset 16
+        float _padding; // offset 28  -> размер 32
     };
+
     static_assert(sizeof(DirectionalLightUniform) == 32);
 
-    struct SceneUniforms {
-        math::Mat4 view;                       // offset 0
-        math::Mat4 proj;                       // offset 64
-        float cameraPos[3];                    // offset 128
-        float ambientStrength;                 // offset 140
-        float ambientColor[3];                 // offset 144
-        float _padding0;                       // offset 156
-        DirectionalLightUniform directional;   // offset 160
+    struct PointLightUniform {
+        float position[3]; // offset 0
+        float intensity; // offset 12
+        float color[3]; // offset 16
+        float radius; // offset 28
+        // size = 32, align = 16
     };
-    static_assert(sizeof(SceneUniforms) == 192);
 
-    // =====================================================================
-    //  Model block (set=1)
-    // =====================================================================
-    struct ModelUniforms {
-        math::Mat4 model;          // offset 0
-        float albedo[3];           // offset 64
-        float shininess;           // offset 76
-        float specularColor[3];    // offset 80
-        float _padding;            // offset 92  -> размер 96
+    static_assert(sizeof(PointLightUniform) == 32);
+
+    struct SpotLightUniform {
+        float position[3]; // offset 0
+        float _pad0; // offset 12
+        float direction[3]; // offset 16
+        float intensity; // offset 28
+        float color[3]; // offset 32
+        float innerAngle; // offset 44
+        float outerAngle; // offset 48
+        float radius; // offset 52
+        float _pad1[2]; // offset 56..63
+        // size = 64, align = 16
     };
+
+    static_assert(sizeof(SpotLightUniform) == 64);
+
+    struct SceneUniforms {
+        math::Mat4 view; // offset 0
+        math::Mat4 proj; // offset 64
+        float cameraPos[3]; // offset 128
+        float ambientStrength; // offset 140
+        float ambientColor[3]; // offset 144
+        float _padding0; // offset 156
+        DirectionalLightUniform directional; // offset 160
+        uint32_t pointLightCount; // offset 192
+        uint32_t spotLightCount; // offset 196
+        float _padding1[2]; // offset 200..208
+    };
+
+    static_assert(sizeof(SceneUniforms) == 208);
+
+    struct ModelUniforms {
+        math::Mat4 model; // offset 0
+        float albedo[3]; // offset 64
+        float shininess; // offset 76
+        float specularColor[3]; // offset 80
+        float _padding; // offset 92  -> размер 96
+    };
+
     static_assert(sizeof(ModelUniforms) == 96);
 
     struct Vertex {
@@ -181,7 +204,8 @@ namespace application {
                 .pSetLayouts = &vk_model_descriptor_set_layout,
             };
 
-            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_model_descriptor_set) != VK_SUCCESS) {
+            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_model_descriptor_set) !=
+                VK_SUCCESS) {
                 std::cerr << "Failed to allocate model descriptor set\n";
                 return false;
             }
@@ -434,6 +458,72 @@ namespace application {
         SceneUniforms *vk_scene_uniform_memory = nullptr;
         VkDescriptorSet vk_scene_descriptor_set = VK_NULL_HANDLE;
 
+        std::vector<PointLightUniform> point_lights{};
+        std::vector<SpotLightUniform> spot_lights{};
+
+        struct LightStorageBuffer {
+            VkBuffer buffer = VK_NULL_HANDLE;
+            VmaAllocation allocation = VK_NULL_HANDLE;
+            void *mapped = nullptr;
+            uint32_t capacity = 0;
+        };
+
+        LightStorageBuffer point_lights_buffer{};
+        LightStorageBuffer spot_lights_buffer{};
+
+        bool recreate_light_buffer(
+            const graphics::internal::Context &ctx,
+            LightStorageBuffer &storage,
+            uint32_t new_capacity,
+            size_t element_size,
+            VkDescriptorSet dst_set,
+            uint32_t dst_binding
+        ) {
+            if (storage.buffer != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(ctx.allocator, storage.buffer, storage.allocation);
+                storage.buffer = VK_NULL_HANDLE;
+                storage.allocation = VK_NULL_HANDLE;
+                storage.mapped = nullptr;
+            }
+
+            const VkBufferCreateInfo info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = element_size * new_capacity,
+                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+            constexpr VmaAllocationCreateInfo alloc = {
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+            VmaAllocationInfo out_info{};
+            if (vmaCreateBuffer(ctx.allocator, &info, &alloc,
+                                &storage.buffer, &storage.allocation, &out_info) != VK_SUCCESS) {
+                std::cerr << "Failed to create light storage buffer\n";
+                return false;
+            }
+            storage.mapped = out_info.pMappedData;
+            storage.capacity = new_capacity;
+
+            std::memset(storage.mapped, 0, element_size * new_capacity);
+
+            const VkDescriptorBufferInfo buf_info = {
+                .buffer = storage.buffer,
+                .offset = 0,
+                .range = element_size * new_capacity,
+            };
+            const VkWriteDescriptorSet write = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = dst_set,
+                .dstBinding = dst_binding,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = &buf_info,
+            };
+            vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
+            return true;
+        }
+
         bool ui_use_perspective = true;
         float ui_fov_deg = 60;
         float ui_ortho_size = 1.5;
@@ -596,17 +686,32 @@ namespace application {
             .pDynamicStates = dynamic_states,
         };
 
-        const VkDescriptorSetLayoutBinding scene_binding = {
-            .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        const VkDescriptorSetLayoutBinding scene_bindings[3] = {
+            {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            },
+            {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            },
+            {
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            },
         };
         const VkDescriptorSetLayoutCreateInfo scene_layout_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = 1,
-            .pBindings = &scene_binding,
+            .bindingCount = 3,
+            .pBindings = scene_bindings,
         };
+
         if (vkCreateDescriptorSetLayout(
                 context.device, &scene_layout_info, nullptr,
                 &vk_scene_descriptor_set_layout) != VK_SUCCESS) {
@@ -614,7 +719,6 @@ namespace application {
             return false;
         }
 
-        // ---------- set=1: model ----------
         const VkDescriptorSetLayoutBinding model_binding = {
             .binding = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -673,16 +777,15 @@ namespace application {
         }
         std::cout << "Pipeline created\n";
 
-        // 1 uniform-буфер для сцены + 1 на каждый Object => 1 + 2 = 3
-        const VkDescriptorPoolSize descriptor_pool_size = {
-            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 3,
+        const VkDescriptorPoolSize pool_sizes[] = {
+            {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 3},
+            {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 2},
         };
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .maxSets = 3,
-            .poolSizeCount = 1,
-            .pPoolSizes = &descriptor_pool_size,
+            .poolSizeCount = 2,
+            .pPoolSizes = pool_sizes,
         };
         if (vkCreateDescriptorPool(context.device, &descriptor_pool_info, nullptr, &vk_descriptor_pool) != VK_SUCCESS) {
             std::cerr << "Failed to create descriptor pool\n";
@@ -717,7 +820,8 @@ namespace application {
                 .descriptorSetCount = 1,
                 .pSetLayouts = &vk_scene_descriptor_set_layout,
             };
-            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_scene_descriptor_set) != VK_SUCCESS) {
+            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_scene_descriptor_set) !=
+                VK_SUCCESS) {
                 std::cerr << "Failed to allocate scene descriptor set\n";
                 return false;
             }
@@ -736,6 +840,15 @@ namespace application {
                 .pBufferInfo = &descriptor_buffer_info,
             };
             vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+
+            if (!recreate_light_buffer(context, point_lights_buffer, 1,
+                                       sizeof(PointLightUniform),
+                                       vk_scene_descriptor_set, 1))
+                return false;
+            if (!recreate_light_buffer(context, spot_lights_buffer, 1,
+                                       sizeof(SpotLightUniform),
+                                       vk_scene_descriptor_set, 2))
+                return false;
         }
 
         for (auto &object: objects | std::views::values) {
@@ -793,6 +906,15 @@ namespace application {
             vk_scene_uniform_buffer = VK_NULL_HANDLE;
             vk_scene_uniform_buffer_allocation = VK_NULL_HANDLE;
             vk_scene_uniform_memory = nullptr;
+        }
+
+        if (point_lights_buffer.buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, point_lights_buffer.buffer, point_lights_buffer.allocation);
+            point_lights_buffer = {};
+        }
+        if (spot_lights_buffer.buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, spot_lights_buffer.buffer, spot_lights_buffer.allocation);
+            spot_lights_buffer = {};
         }
 
         for (auto &object: objects | std::views::values) {
@@ -855,6 +977,74 @@ namespace application {
         ImGui::SliderFloat3("Dir light direction", ui_dir_direction, -1, 1);
         ImGui::ColorEdit3("Dir light color", ui_dir_color);
         ImGui::SliderFloat("Dir light intensity", &ui_dir_intensity, 0, 5);
+
+        ImGui::Separator();
+        ImGui::Text("Point lights: %zu", point_lights.size());
+        if (ImGui::Button("Add point light")) {
+            PointLightUniform pl{};
+            pl.position[0] = 0.0f;
+            pl.position[1] = 1.0f;
+            pl.position[2] = 0.0f;
+            pl.color[0] = 1.0f;
+            pl.color[1] = 0.4f;
+            pl.color[2] = 0.2f;
+            pl.intensity = 1.0f;
+            pl.radius = 4.0f;
+            point_lights.push_back(pl);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Remove last point light")) {
+            if (!point_lights.empty()) point_lights.pop_back();
+        }
+        for (size_t i = 0; i < point_lights.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i) + 1000);
+            if (ImGui::TreeNode("pl", "Point light #%d", static_cast<int>(i))) {
+                ImGui::SliderFloat3("Position", point_lights[i].position, -10.0f, 10.0f);
+                ImGui::ColorEdit3("Color", point_lights[i].color);
+                ImGui::SliderFloat("Intensity", &point_lights[i].intensity, 0.0f, 10.0f);
+                ImGui::SliderFloat("Radius", &point_lights[i].radius, 0.0f, 20.0f);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Spot lights: %zu", spot_lights.size());
+        if (ImGui::Button("Add spot light")) {
+            SpotLightUniform sl{};
+            sl.position[0] = 0.0f;
+            sl.position[1] = 3.0f;
+            sl.position[2] = 0.0f;
+            sl.direction[0] = 0.0f;
+            sl.direction[1] = -1.0f;
+            sl.direction[2] = 0.0f;
+            sl.color[0] = 1.0f;
+            sl.color[1] = 1.0f;
+            sl.color[2] = 1.0f;
+            sl.intensity = 2.0f;
+            sl.innerAngle = 0.30f; // ~17°
+            sl.outerAngle = 0.50f; // ~28°
+            sl.radius = 6.0f;
+            spot_lights.push_back(sl);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Remove last spot light")) {
+            if (!spot_lights.empty()) spot_lights.pop_back();
+        }
+        for (size_t i = 0; i < spot_lights.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i) + 2000);
+            if (ImGui::TreeNode("sl", "Spot light #%d", static_cast<int>(i))) {
+                ImGui::SliderFloat3("Position", spot_lights[i].position, -10.0f, 10.0f);
+                ImGui::SliderFloat3("Direction", spot_lights[i].direction, -1.0f, 1.0f);
+                ImGui::ColorEdit3("Color", spot_lights[i].color);
+                ImGui::SliderFloat("Intensity", &spot_lights[i].intensity, 0.0f, 10.0f);
+                ImGui::SliderFloat("Inner angle", &spot_lights[i].innerAngle, 0.0f, 1.55f);
+                ImGui::SliderFloat("Outer angle", &spot_lights[i].outerAngle, 0.0f, 1.55f);
+                ImGui::SliderFloat("Radius", &spot_lights[i].radius, 0.0f, 20.0f);
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
 
         ImGui::Separator();
         ImGui::Text("Material");
@@ -981,6 +1171,40 @@ namespace application {
         vk_scene_uniform_memory->directional.color[1] = ui_dir_color[1];
         vk_scene_uniform_memory->directional.color[2] = ui_dir_color[2];
         vk_scene_uniform_memory->directional._padding = 0.0f;
+
+        const auto &ctx2 = graphics::internal::context;
+
+        {
+            const uint32_t required = static_cast<uint32_t>(point_lights.size());
+            const uint32_t want_capacity = std::max<uint32_t>(1u, required);
+            if (want_capacity > point_lights_buffer.capacity) {
+                if (!recreate_light_buffer(ctx2, point_lights_buffer, want_capacity,
+                                           sizeof(PointLightUniform),
+                                           vk_scene_descriptor_set, 1))
+                    return;
+            }
+            if (required > 0) {
+                std::memcpy(point_lights_buffer.mapped, point_lights.data(),
+                            sizeof(PointLightUniform) * required);
+            }
+            vk_scene_uniform_memory->pointLightCount = required;
+        }
+
+        {
+            const uint32_t required = static_cast<uint32_t>(spot_lights.size());
+            const uint32_t want_capacity = std::max<uint32_t>(1u, required);
+            if (want_capacity > spot_lights_buffer.capacity) {
+                if (!recreate_light_buffer(ctx2, spot_lights_buffer, want_capacity,
+                                           sizeof(SpotLightUniform),
+                                           vk_scene_descriptor_set, 2))
+                    return;
+            }
+            if (required > 0) {
+                std::memcpy(spot_lights_buffer.mapped, spot_lights.data(),
+                            sizeof(SpotLightUniform) * required);
+            }
+            vk_scene_uniform_memory->spotLightCount = required;
+        }
 
         {
             auto &mm = objects[Figure::Cone].vk_model_uniform_memory;
