@@ -550,9 +550,9 @@ namespace application {
         float ui_dir_color[3] = {1, 1, 1};
         float ui_dir_intensity = 1;
 
-        float ui_albedo[3] = {1, 1, 1};
-        float ui_specular_color[3] = {1, 1, 1};
-        float ui_shininess = 32.0f;
+        float ui_albedo[3] = {0.8f, 0.85f, 0.95f};
+        float ui_specular_color[3] = {1.0f, 0.95f, 0.8f};
+        float ui_shininess = 64.0f;
     }
 
     bool initialize() {
@@ -971,12 +971,15 @@ namespace application {
         ImGui::SliderFloat("Camera pitch (deg)", &ui_camera_pitch_deg, -89, 89);
 
         ImGui::Separator();
-        ImGui::Text("Scene lighting");
-        ImGui::SliderFloat("Ambient strength", &ui_ambient_strength, 0, 1);
+        ImGui::Text("Ambient");
+        ImGui::SliderFloat("Strength", &ui_ambient_strength, 0, 1);
         ImGui::ColorEdit3("Ambient color", ui_ambient_color);
-        ImGui::SliderFloat3("Dir light direction", ui_dir_direction, -1, 1);
-        ImGui::ColorEdit3("Dir light color", ui_dir_color);
-        ImGui::SliderFloat("Dir light intensity", &ui_dir_intensity, 0, 5);
+
+        ImGui::Separator();
+        ImGui::Text("Directional light");
+        ImGui::SliderFloat3("Direction", ui_dir_direction, -1, 1);
+        ImGui::ColorEdit3("Dir color", ui_dir_color);
+        ImGui::SliderFloat("Dir intensity", &ui_dir_intensity, 0, 5);
 
         ImGui::Separator();
         ImGui::Text("Point lights: %zu", point_lights.size());
