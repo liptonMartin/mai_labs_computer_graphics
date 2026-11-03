@@ -12,6 +12,9 @@
 #include <map>
 #include <ranges>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 namespace application {
     enum class Figure {
         Cube,
@@ -100,12 +103,6 @@ namespace application {
         VkBuffer vk_index_buffer = VK_NULL_HANDLE;
         VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
 
-        // model uniforms (set=1)
-        VkBuffer vk_model_uniform_buffer = VK_NULL_HANDLE;
-        VmaAllocation vk_model_uniform_buffer_allocation = VK_NULL_HANDLE;
-        ModelUniforms *vk_model_uniform_memory = nullptr;
-        VkDescriptorSet vk_model_descriptor_set = VK_NULL_HANDLE;
-
         Object() = default;
 
         bool create_vertex_and_index_buffers(
@@ -172,71 +169,6 @@ namespace application {
             return true;
         }
 
-        bool create_model_resources(
-            const graphics::internal::Context &context,
-            const VkDescriptorPool &vk_descriptor_pool,
-            const VkDescriptorSetLayout &vk_model_descriptor_set_layout
-        ) {
-            // --- model uniform buffer ---
-            const VkBufferCreateInfo uniform_buffer_info = {
-                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size = sizeof(ModelUniforms),
-                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            };
-
-            constexpr VmaAllocationCreateInfo uniform_buffer_allocation = {
-                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
-                .usage = VMA_MEMORY_USAGE_AUTO,
-            };
-
-            VmaAllocationInfo uniform_allocation_info{};
-            if (vmaCreateBuffer(
-                    context.allocator,
-                    &uniform_buffer_info,
-                    &uniform_buffer_allocation,
-                    &vk_model_uniform_buffer,
-                    &vk_model_uniform_buffer_allocation,
-                    &uniform_allocation_info
-                ) != VK_SUCCESS) {
-                std::cerr << "Failed to create model uniform buffer\n";
-                return false;
-            }
-            vk_model_uniform_memory = static_cast<ModelUniforms *>(uniform_allocation_info.pMappedData);
-
-            // --- descriptor set ---
-            const VkDescriptorSetAllocateInfo descriptor_set_info = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                .descriptorPool = vk_descriptor_pool,
-                .descriptorSetCount = 1,
-                .pSetLayouts = &vk_model_descriptor_set_layout,
-            };
-
-            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_model_descriptor_set) !=
-                VK_SUCCESS) {
-                std::cerr << "Failed to allocate model descriptor set\n";
-                return false;
-            }
-
-            const VkDescriptorBufferInfo descriptor_buffer_info = {
-                .buffer = vk_model_uniform_buffer,
-                .offset = 0,
-                .range = sizeof(ModelUniforms),
-            };
-
-            const VkWriteDescriptorSet descriptor_write = {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = vk_model_descriptor_set,
-                .dstBinding = 0,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .pBufferInfo = &descriptor_buffer_info,
-            };
-
-            vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
-            std::cout << "Successfully created model uniform memory and descriptor set\n";
-            return true;
-        }
     };
 
     std::array<float, 3> color_from_pos(float x, float y, float z) {
@@ -499,8 +431,27 @@ namespace application {
 
     namespace {
         constexpr int CONE_SEGMENTS = 24;
+        constexpr uint32_t MAX_MODELS = 1024;
+
+        static_assert(static_cast<uint32_t>(Figure::Cone2) < MAX_MODELS);
 
         std::map<Figure, Object> objects{};
+
+        VkBuffer vk_model_uniform_buffer = VK_NULL_HANDLE;
+        VmaAllocation vk_model_uniform_buffer_allocation = VK_NULL_HANDLE;
+        uint8_t *vk_model_uniform_memory = nullptr;
+        VkDeviceSize uniforms_stride = 0;
+        VkDescriptorSet vk_model_descriptor_set = VK_NULL_HANDLE;
+
+        uint32_t model_index(const Figure figure) {
+            return static_cast<uint32_t>(figure);
+        }
+
+        ModelUniforms *model_uniforms_at(const Figure figure) {
+            return reinterpret_cast<ModelUniforms *>(
+                vk_model_uniform_memory + model_index(figure) * uniforms_stride
+            );
+        }
 
         VkShaderModule vk_vertex_shader = VK_NULL_HANDLE;
         VkShaderModule vk_fragment_shader = VK_NULL_HANDLE;
@@ -800,7 +751,7 @@ namespace application {
 
         const VkDescriptorSetLayoutBinding model_binding = {
             .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             .descriptorCount = 1,
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         };
@@ -858,12 +809,13 @@ namespace application {
 
         const VkDescriptorPoolSize pool_sizes[] = {
             {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4},
-            {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 2},
+            {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 4},
+            {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4},
         };
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 4,
-            .poolSizeCount = 2,
+            .maxSets = 16,
+            .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]),
             .pPoolSizes = pool_sizes,
         };
         if (vkCreateDescriptorPool(context.device, &descriptor_pool_info, nullptr, &vk_descriptor_pool) != VK_SUCCESS) {
@@ -930,9 +882,61 @@ namespace application {
                 return false;
         }
 
-        for (auto &object: objects | std::views::values) {
-            if (!object.create_model_resources(context, vk_descriptor_pool, vk_model_descriptor_set_layout))
+        {
+            VkPhysicalDeviceProperties device_properties{};
+            vkGetPhysicalDeviceProperties(context.physical_device, &device_properties);
+
+            const VkDeviceSize alignment = device_properties.limits.minUniformBufferOffsetAlignment;
+            uniforms_stride = (sizeof(ModelUniforms) + alignment - 1) & ~(alignment - 1);
+
+            const VkBufferCreateInfo buffer_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = uniforms_stride * MAX_MODELS,
+                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+            constexpr VmaAllocationCreateInfo allocation_info = {
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+            VmaAllocationInfo out_info{};
+            if (vmaCreateBuffer(
+                    context.allocator, &buffer_info, &allocation_info,
+                    &vk_model_uniform_buffer, &vk_model_uniform_buffer_allocation,
+                    &out_info) != VK_SUCCESS) {
+                std::cerr << "Failed to create model uniform buffer\n";
                 return false;
+            }
+            vk_model_uniform_memory = static_cast<uint8_t *>(out_info.pMappedData);
+            std::memset(vk_model_uniform_memory, 0, static_cast<size_t>(uniforms_stride * MAX_MODELS));
+
+            const VkDescriptorSetAllocateInfo descriptor_set_info = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool = vk_descriptor_pool,
+                .descriptorSetCount = 1,
+                .pSetLayouts = &vk_model_descriptor_set_layout,
+            };
+            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_model_descriptor_set) !=
+                VK_SUCCESS) {
+                std::cerr << "Failed to allocate model descriptor set\n";
+                return false;
+            }
+
+            const VkDescriptorBufferInfo descriptor_buffer_info = {
+                .buffer = vk_model_uniform_buffer,
+                .offset = 0,
+                .range = sizeof(ModelUniforms),
+            };
+            const VkWriteDescriptorSet descriptor_write = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = vk_model_descriptor_set,
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                .pBufferInfo = &descriptor_buffer_info,
+            };
+            vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+            std::cout << "Successfully created dynamic model uniform buffer and descriptor set\n";
         }
 
 
@@ -1169,8 +1173,7 @@ namespace application {
             vk_descriptor_pool = VK_NULL_HANDLE;
 
             vk_scene_descriptor_set = VK_NULL_HANDLE;
-            for (auto &object: objects | std::views::values)
-                object.vk_model_descriptor_set = VK_NULL_HANDLE;
+            vk_model_descriptor_set = VK_NULL_HANDLE;
         }
 
         if (vk_scene_descriptor_set_layout != VK_NULL_HANDLE) {
@@ -1198,17 +1201,11 @@ namespace application {
             spot_lights_buffer = {};
         }
 
-        for (auto &object: objects | std::views::values) {
-            if (object.vk_model_uniform_buffer != VK_NULL_HANDLE) {
-                vmaDestroyBuffer(
-                    context.allocator,
-                    object.vk_model_uniform_buffer,
-                    object.vk_model_uniform_buffer_allocation
-                );
-                object.vk_model_uniform_buffer = VK_NULL_HANDLE;
-                object.vk_model_uniform_buffer_allocation = VK_NULL_HANDLE;
-                object.vk_model_uniform_memory = nullptr;
-            }
+        if (vk_model_uniform_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(context.allocator, vk_model_uniform_buffer, vk_model_uniform_buffer_allocation);
+            vk_model_uniform_buffer = VK_NULL_HANDLE;
+            vk_model_uniform_buffer_allocation = VK_NULL_HANDLE;
+            vk_model_uniform_memory = nullptr;
         }
 
         for (auto &object: objects | std::views::values) {
@@ -1521,7 +1518,7 @@ namespace application {
         }
 
         {
-            auto &mm = objects[Figure::Cone].vk_model_uniform_memory;
+            ModelUniforms *mm = model_uniforms_at(Figure::Cone);
             mm->model = cone_model;
             mm->albedo[0] = ui_albedo[0];
             mm->albedo[1] = ui_albedo[1];
@@ -1533,7 +1530,7 @@ namespace application {
             mm->_padding = 0.0f;
         }
         {
-            auto &mm = objects[Figure::Cone2].vk_model_uniform_memory;
+            ModelUniforms *mm = model_uniforms_at(Figure::Cone2);
             mm->model = cone2_model;
             mm->albedo[0] = ui_albedo[0] * 0.85f;
             mm->albedo[1] = ui_albedo[1];
@@ -1545,7 +1542,7 @@ namespace application {
             mm->_padding = 0.0f;
         }
         {
-            auto &mm = objects[Figure::Cube].vk_model_uniform_memory;
+            ModelUniforms *mm = model_uniforms_at(Figure::Cube);
             mm->model = cube_model;
             mm->albedo[0] = ui_albedo[0];
             mm->albedo[1] = ui_albedo[1];
@@ -1601,14 +1598,15 @@ namespace application {
 
         vkCmdBindPipeline(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_cone_pipeline);
 
-        for (const auto &object: objects | std::views::values) {
+        for (const auto &[figure, object]: objects) {
             const VkDeviceSize device_size = 0;
             vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &object.vk_vertex_buffer, &device_size);
             vkCmdBindIndexBuffer(fd.command_buffer, object.vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
+            const uint32_t dynamic_offset = static_cast<uint32_t>(model_index(figure) * uniforms_stride);
             const VkDescriptorSet descriptor_sets[2] = {
                 vk_scene_descriptor_set,
-                object.vk_model_descriptor_set,
+                vk_model_descriptor_set,
             };
             vkCmdBindDescriptorSets(
                 fd.command_buffer,
@@ -1617,8 +1615,8 @@ namespace application {
                 0,
                 2,
                 descriptor_sets,
-                0,
-                nullptr
+                1,
+                &dynamic_offset
             );
 
             vkCmdDrawIndexed(fd.command_buffer, object.vk_index_count, 1, 0, 0, 0);

@@ -48,6 +48,13 @@ FetchContent_Declare(
 	GIT_TAG v1.92.9
 )
 
+FetchContent_Declare(
+		stb
+		GIT_REPOSITORY https://github.com/nothings/stb.git
+		GIT_TAG d14d46f6b44456eb88beac58cba833a4135d4c89
+		GIT_SHALLOW TRUE
+)
+
 find_package(Vulkan REQUIRED)
 
 set(GLFW_LIBRARY_TYPE STATIC)
@@ -56,10 +63,11 @@ set(GLFW_BUILD_TESTS OFF)
 set(GLFW_BUILD_DOCS OFF)
 
 FetchContent_MakeAvailable(
-	glfw
-	vk-bootstrap
-	VulkanMemoryAllocator
-	imgui
+		glfw
+		vk-bootstrap
+		VulkanMemoryAllocator
+		imgui
+		stb
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -79,6 +87,8 @@ target_sources(${PROJECT_NAME} PRIVATE
 	${imgui_SOURCE_DIR}/imgui_widgets.cpp
 	${imgui_SOURCE_DIR}/imgui_demo.cpp
 )
+
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${stb_SOURCE_DIR})
 
 # Compile shaders
 find_program(GLSLC_FOUND glslc)
