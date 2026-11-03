@@ -8,6 +8,7 @@
 #include <cmath>
 #include <iostream>
 #include <cstring>
+#include <string>
 #include <fstream>
 #include <map>
 #include <ranges>
@@ -291,6 +292,145 @@ namespace application {
         };
 
         UploadContext upload_context{};
+
+        struct Texture {
+            VkImage image = VK_NULL_HANDLE;
+            VmaAllocation allocation = VK_NULL_HANDLE;
+            VkImageView view = VK_NULL_HANDLE;
+            uint32_t width = 0;
+            uint32_t height = 0;
+        };
+
+        Texture albedo_texture{};
+        VkSampler albedo_sampler = VK_NULL_HANDLE;
+
+        bool create_texture_from_file(UploadContext &upload, const std::string &path,
+                                      const VkFormat format, Texture &texture) {
+            int width = 0;
+            int height = 0;
+            int source_channels = 0;
+            stbi_uc *pixels = stbi_load(path.c_str(), &width, &height, &source_channels, STBI_rgb_alpha);
+            if (pixels == nullptr || width <= 0 || height <= 0) {
+                std::cerr << "Failed to load texture '" << path << "': " << stbi_failure_reason() << "\n";
+                if (pixels != nullptr)
+                    stbi_image_free(pixels);
+                return false;
+            }
+
+            texture.width = static_cast<uint32_t>(width);
+            texture.height = static_cast<uint32_t>(height);
+            const VkDeviceSize pixel_size = static_cast<VkDeviceSize>(texture.width) *
+                                            static_cast<VkDeviceSize>(texture.height) * 4;
+
+            const VkImageCreateInfo image_info = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = format,
+                .extent = {texture.width, texture.height, 1},
+                .mipLevels = 1,
+                .arrayLayers = 1,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            constexpr VmaAllocationCreateInfo allocation_info = {
+                .usage = VMA_MEMORY_USAGE_AUTO,
+            };
+            if (vmaCreateImage(graphics::internal::context.allocator, &image_info, &allocation_info,
+                               &texture.image, &texture.allocation, nullptr) != VK_SUCCESS) {
+                std::cerr << "Failed to create texture image\n";
+                stbi_image_free(pixels);
+                return false;
+            }
+
+            const VkImageViewCreateInfo view_info = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = texture.image,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = format,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            };
+            if (vkCreateImageView(graphics::internal::context.device, &view_info, nullptr,
+                                  &texture.view) != VK_SUCCESS) {
+                std::cerr << "Failed to create texture image view\n";
+                stbi_image_free(pixels);
+                return false;
+            }
+
+            const VkDeviceSize staging_offset = upload.stage(pixels, static_cast<size_t>(pixel_size));
+            stbi_image_free(pixels);
+            if (staging_offset == VK_WHOLE_SIZE)
+                return false;
+
+            const VkImageMemoryBarrier to_transfer = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = 0,
+                .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = texture.image,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            };
+            vkCmdPipelineBarrier(upload.command_buffer,
+                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &to_transfer);
+
+            const VkBufferImageCopy copy_region = {
+                .bufferOffset = staging_offset,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .mipLevel = 0,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {texture.width, texture.height, 1},
+            };
+            vkCmdCopyBufferToImage(upload.command_buffer, upload.staging_buffer, texture.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+            const VkImageMemoryBarrier to_shader_read = {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = texture.image,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            };
+            vkCmdPipelineBarrier(upload.command_buffer,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &to_shader_read);
+            return true;
+        }
     }
 
     struct Object {
@@ -414,7 +554,9 @@ namespace application {
 
         // 0..n: кольцо основания боковой поверхности, включая дубликат для UV-шва.
         for (int i = 0; i <= n; ++i) {
-            const float u = static_cast<float>(i) / static_cast<float>(n);
+            // Направление обхода кольца противоположно горизонтальному
+            // направлению текстуры, поэтому инвертируем U.
+            const float u = 1.0f - static_cast<float>(i) / static_cast<float>(n);
             const float corner = static_cast<float>(i) * step;
             const float x = std::cos(corner) * radius;
             const float z = std::sin(corner) * radius;
@@ -442,7 +584,7 @@ namespace application {
             array.push_back(Vertex{
                 {0.0f, apex_y, 0.0f},
                 {nx / len, ny / len, nz / len},
-                {(static_cast<float>(i) + 0.5f) / static_cast<float>(n), 0.0f}
+                {1.0f - (static_cast<float>(i) + 0.5f) / static_cast<float>(n), 0.0f}
             });
         }
 
@@ -788,7 +930,6 @@ namespace application {
         float ui_dir_color[3] = {1, 1, 1};
         float ui_dir_intensity = 1;
 
-        float ui_albedo[3] = {0.8f, 0.85f, 0.95f};
         float ui_specular_color[3] = {1.0f, 0.95f, 0.8f};
         float ui_shininess = 64.0f;
     }
@@ -811,6 +952,33 @@ namespace application {
 
         if (!upload_context.begin())
             return false;
+
+        if (!create_texture_from_file(upload_context, "../assets/test_albedo.png",
+                                      VK_FORMAT_R8G8B8A8_SRGB, albedo_texture))
+            return false;
+
+        const VkSamplerCreateInfo sampler_info = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_LINEAR,
+            .minFilter = VK_FILTER_LINEAR,
+            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .mipLodBias = 0.0f,
+            .anisotropyEnable = VK_FALSE,
+            .maxAnisotropy = 1.0f,
+            .compareEnable = VK_FALSE,
+            .compareOp = VK_COMPARE_OP_ALWAYS,
+            .minLod = 0.0f,
+            .maxLod = 0.0f,
+            .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            .unnormalizedCoordinates = VK_FALSE,
+        };
+        if (vkCreateSampler(context.device, &sampler_info, nullptr, &albedo_sampler) != VK_SUCCESS) {
+            std::cerr << "Failed to create albedo sampler\n";
+            return false;
+        }
 
         const auto cone_vertexes = make_cone_vertexes(CONE_SEGMENTS);
         const auto cone_indexes = make_cone_indexes(CONE_SEGMENTS);
@@ -978,16 +1146,24 @@ namespace application {
             return false;
         }
 
-        const VkDescriptorSetLayoutBinding model_binding = {
-            .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        const VkDescriptorSetLayoutBinding model_bindings[2] = {
+            {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            },
+            {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            },
         };
         const VkDescriptorSetLayoutCreateInfo model_layout_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = 1,
-            .pBindings = &model_binding,
+            .bindingCount = 2,
+            .pBindings = model_bindings,
         };
         if (vkCreateDescriptorSetLayout(
                 context.device, &model_layout_info, nullptr,
@@ -1040,6 +1216,7 @@ namespace application {
             {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4},
             {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 4},
             {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4},
+            {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1},
         };
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1165,6 +1342,21 @@ namespace application {
                 .pBufferInfo = &descriptor_buffer_info,
             };
             vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+
+            const VkDescriptorImageInfo image_descriptor_info = {
+                .sampler = albedo_sampler,
+                .imageView = albedo_texture.view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+            const VkWriteDescriptorSet image_descriptor_write = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = vk_model_descriptor_set,
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &image_descriptor_info,
+            };
+            vkUpdateDescriptorSets(context.device, 1, &image_descriptor_write, 0, nullptr);
             std::cout << "Successfully created dynamic model uniform buffer and descriptor set\n";
         }
 
@@ -1424,6 +1616,23 @@ namespace application {
             vk_model_descriptor_set = VK_NULL_HANDLE;
         }
 
+        if (albedo_sampler != VK_NULL_HANDLE) {
+            vkDestroySampler(context.device, albedo_sampler, nullptr);
+            albedo_sampler = VK_NULL_HANDLE;
+        }
+        if (albedo_texture.view != VK_NULL_HANDLE) {
+            vkDestroyImageView(context.device, albedo_texture.view, nullptr);
+            albedo_texture.view = VK_NULL_HANDLE;
+        }
+        if (albedo_texture.image != VK_NULL_HANDLE) {
+            vmaDestroyImage(context.allocator, albedo_texture.image, albedo_texture.allocation);
+            albedo_texture.image = VK_NULL_HANDLE;
+            albedo_texture.allocation = VK_NULL_HANDLE;
+            albedo_texture.width = 0;
+            albedo_texture.height = 0;
+        }
+
+
         if (vk_scene_descriptor_set_layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(context.device, vk_scene_descriptor_set_layout, nullptr);
             vk_scene_descriptor_set_layout = VK_NULL_HANDLE;
@@ -1585,7 +1794,6 @@ namespace application {
 
         ImGui::Separator();
         ImGui::Text("Material");
-        ImGui::ColorEdit3("Albedo", ui_albedo);
         ImGui::ColorEdit3("Specular color", ui_specular_color);
         ImGui::SliderFloat("Shininess", &ui_shininess, 1, 256);
 
@@ -1770,9 +1978,7 @@ namespace application {
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Cone);
             mm->model = cone_model;
-            mm->albedo[0] = ui_albedo[0];
-            mm->albedo[1] = ui_albedo[1];
-            mm->albedo[2] = ui_albedo[2];
+            mm->albedo[0] = mm->albedo[1] = mm->albedo[2] = 1.0f;
             mm->shininess = ui_shininess;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
@@ -1782,9 +1988,7 @@ namespace application {
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Cone2);
             mm->model = cone2_model;
-            mm->albedo[0] = ui_albedo[0] * 0.85f;
-            mm->albedo[1] = ui_albedo[1];
-            mm->albedo[2] = ui_albedo[2] * 1.0f;
+            mm->albedo[0] = mm->albedo[1] = mm->albedo[2] = 1.0f;
             mm->shininess = ui_shininess * 0.7f;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
@@ -1794,9 +1998,6 @@ namespace application {
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Cube);
             mm->model = cube_model;
-            mm->albedo[0] = ui_albedo[0];
-            mm->albedo[1] = ui_albedo[1];
-            mm->albedo[2] = ui_albedo[2];
             mm->shininess = ui_shininess;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];

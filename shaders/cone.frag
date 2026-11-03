@@ -6,7 +6,6 @@ layout(location=3) in vec2 in_uv;
 
 layout(location=0) out vec4 out_color;
 
-const bool DEBUG_UV = true;
 
 layout(std140, set=0, binding=0) uniform SceneUniforms {
     mat4 view;
@@ -31,6 +30,8 @@ layout(std140, set=1, binding=0) uniform ModelUniforms {
     vec3 specularColor;
     float _pad0;
 } model_data;
+
+layout(set=1, binding=1) uniform sampler2D albedo_tex;
 
 struct PointLight {
     vec3 position;
@@ -61,15 +62,11 @@ layout(std430, set=0, binding=2) readonly buffer SpotLights {
 } spotLights;
 
 void main() {
-    if (DEBUG_UV) {
-        out_color = vec4(in_uv, 0.0, 1.0);
-        return;
-    }
-
+    const vec3 albedo = texture(albedo_tex, in_uv).rgb;
     const vec3 N = normalize(in_normal);
     const vec3 V = normalize(scene.cameraPos - in_world_pos);
 
-    const vec3 ambient = scene.ambientStrength * scene.ambientColor * model_data.albedo;
+    const vec3 ambient = scene.ambientStrength * scene.ambientColor * albedo;
 
     const vec3 Ld = normalize(-scene.dir_direction);
     const vec3 Hd = normalize(Ld + V);
@@ -77,7 +74,7 @@ void main() {
     const float NdotHd = max(dot(N, Hd), 0.0);
     const float spec_d = (NdotLd > 0.0) ? pow(NdotHd, max(model_data.shininess, 1e-3)) : 0.0;
     const vec3 directional =
-        (model_data.albedo * NdotLd + model_data.specularColor * spec_d)
+        (albedo * NdotLd + model_data.specularColor * spec_d)
         * scene.dir_color * scene.dir_intensity;
 
     vec3 point_accum = vec3(0.0);
@@ -104,7 +101,7 @@ void main() {
         }
 
         const vec3 contribution =
-            (model_data.albedo * NdotL + model_data.specularColor * spec_p)
+            (albedo * NdotL + model_data.specularColor * spec_p)
             * pl.color * pl.intensity * attenuation * radius_falloff;
 
         point_accum += contribution;
@@ -144,7 +141,7 @@ void main() {
         }
 
         const vec3 contribution =
-            (model_data.albedo * NdotL + model_data.specularColor * spec_s)
+            (albedo * NdotL + model_data.specularColor * spec_s)
             * sl.color * sl.intensity * attenuation
             * spotAttenuation * radius_falloff;
 
