@@ -301,7 +301,12 @@ namespace application {
             uint32_t height = 0;
         };
 
-        Texture albedo_texture{};
+        struct Material {
+            std::string name;
+            Texture albedo;
+            VkDescriptorSet set = VK_NULL_HANDLE;
+        };
+
         VkSampler albedo_sampler = VK_NULL_HANDLE;
 
         bool create_texture_from_file(UploadContext &upload, const std::string &path,
@@ -441,6 +446,8 @@ namespace application {
 
         VkBuffer vk_index_buffer = VK_NULL_HANDLE;
         VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
+
+        uint32_t material_index = 0;
 
         Object() = default;
 
@@ -796,7 +803,23 @@ namespace application {
         VmaAllocation vk_model_uniform_buffer_allocation = VK_NULL_HANDLE;
         uint8_t *vk_model_uniform_memory = nullptr;
         VkDeviceSize uniforms_stride = 0;
-        VkDescriptorSet vk_model_descriptor_set = VK_NULL_HANDLE;
+
+        struct MaterialSource {
+            const char *name;
+            const char *path;
+        };
+
+        constexpr MaterialSource material_sources[] = {
+            {"UV test", "../assets/test_albedo.png"},
+            {"Bricks", "../assets/mat_bricks.png"},
+            {"Stripes", "../assets/mat_stripes.png"},
+            {"Rings", "../assets/mat_rings.png"},
+        };
+        constexpr size_t material_source_count = sizeof(material_sources) / sizeof(material_sources[0]);
+        constexpr uint32_t MAX_MATERIALS = 16;
+        static_assert(material_source_count <= MAX_MATERIALS);
+
+        std::vector<Material> materials{};
 
         uint32_t model_index(const Figure figure) {
             return static_cast<uint32_t>(figure);
@@ -953,9 +976,13 @@ namespace application {
         if (!upload_context.begin())
             return false;
 
-        if (!create_texture_from_file(upload_context, "../assets/test_albedo.png",
-                                      VK_FORMAT_R8G8B8A8_SRGB, albedo_texture))
-            return false;
+        materials.resize(material_source_count);
+        for (size_t i = 0; i < material_source_count; ++i) {
+            materials[i].name = material_sources[i].name;
+            if (!create_texture_from_file(upload_context, material_sources[i].path,
+                                          VK_FORMAT_R8G8B8A8_SRGB, materials[i].albedo))
+                return false;
+        }
 
         const VkSamplerCreateInfo sampler_info = {
             .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -1214,13 +1241,13 @@ namespace application {
 
         const VkDescriptorPoolSize pool_sizes[] = {
             {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4},
-            {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 4},
+            {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 4 + MAX_MATERIALS},
             {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4},
-            {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1},
+            {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 + MAX_MATERIALS},
         };
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 16,
+            .maxSets = 4 + MAX_MATERIALS,
             .poolSizeCount = sizeof(pool_sizes) / sizeof(pool_sizes[0]),
             .pPoolSizes = pool_sizes,
         };
@@ -1316,15 +1343,18 @@ namespace application {
             vk_model_uniform_memory = static_cast<uint8_t *>(out_info.pMappedData);
             std::memset(vk_model_uniform_memory, 0, static_cast<size_t>(uniforms_stride * MAX_MODELS));
 
+            const std::vector<VkDescriptorSetLayout> material_layouts(
+                materials.size(), vk_model_descriptor_set_layout);
+            std::vector<VkDescriptorSet> material_sets(materials.size(), VK_NULL_HANDLE);
             const VkDescriptorSetAllocateInfo descriptor_set_info = {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                 .descriptorPool = vk_descriptor_pool,
-                .descriptorSetCount = 1,
-                .pSetLayouts = &vk_model_descriptor_set_layout,
+                .descriptorSetCount = static_cast<uint32_t>(material_layouts.size()),
+                .pSetLayouts = material_layouts.data(),
             };
-            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, &vk_model_descriptor_set) !=
+            if (vkAllocateDescriptorSets(context.device, &descriptor_set_info, material_sets.data()) !=
                 VK_SUCCESS) {
-                std::cerr << "Failed to allocate model descriptor set\n";
+                std::cerr << "Failed to allocate material descriptor sets\n";
                 return false;
             }
 
@@ -1333,31 +1363,37 @@ namespace application {
                 .offset = 0,
                 .range = sizeof(ModelUniforms),
             };
-            const VkWriteDescriptorSet descriptor_write = {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = vk_model_descriptor_set,
-                .dstBinding = 0,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-                .pBufferInfo = &descriptor_buffer_info,
-            };
-            vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+            std::vector<VkDescriptorImageInfo> image_descriptor_infos(materials.size());
+            std::vector<VkWriteDescriptorSet> descriptor_writes;
+            descriptor_writes.reserve(materials.size() * 2);
+            for (size_t i = 0; i < materials.size(); ++i) {
+                materials[i].set = material_sets[i];
 
-            const VkDescriptorImageInfo image_descriptor_info = {
-                .sampler = albedo_sampler,
-                .imageView = albedo_texture.view,
-                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            };
-            const VkWriteDescriptorSet image_descriptor_write = {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = vk_model_descriptor_set,
-                .dstBinding = 1,
-                .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo = &image_descriptor_info,
-            };
-            vkUpdateDescriptorSets(context.device, 1, &image_descriptor_write, 0, nullptr);
-            std::cout << "Successfully created dynamic model uniform buffer and descriptor set\n";
+                image_descriptor_infos[i] = {
+                    .sampler = albedo_sampler,
+                    .imageView = materials[i].albedo.view,
+                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                };
+                descriptor_writes.push_back({
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = materials[i].set,
+                    .dstBinding = 0,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                    .pBufferInfo = &descriptor_buffer_info,
+                });
+                descriptor_writes.push_back({
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = materials[i].set,
+                    .dstBinding = 1,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .pImageInfo = &image_descriptor_infos[i],
+                });
+            }
+            vkUpdateDescriptorSets(context.device, static_cast<uint32_t>(descriptor_writes.size()),
+                                   descriptor_writes.data(), 0, nullptr);
+            std::cout << "Successfully created dynamic model uniform buffer and material descriptor sets\n";
         }
 
 
@@ -1613,24 +1649,29 @@ namespace application {
             vk_descriptor_pool = VK_NULL_HANDLE;
 
             vk_scene_descriptor_set = VK_NULL_HANDLE;
-            vk_model_descriptor_set = VK_NULL_HANDLE;
+            for (auto &material: materials)
+                material.set = VK_NULL_HANDLE;
         }
 
         if (albedo_sampler != VK_NULL_HANDLE) {
             vkDestroySampler(context.device, albedo_sampler, nullptr);
             albedo_sampler = VK_NULL_HANDLE;
         }
-        if (albedo_texture.view != VK_NULL_HANDLE) {
-            vkDestroyImageView(context.device, albedo_texture.view, nullptr);
-            albedo_texture.view = VK_NULL_HANDLE;
+        for (auto &material: materials) {
+            Texture &texture = material.albedo;
+            if (texture.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(context.device, texture.view, nullptr);
+                texture.view = VK_NULL_HANDLE;
+            }
+            if (texture.image != VK_NULL_HANDLE) {
+                vmaDestroyImage(context.allocator, texture.image, texture.allocation);
+                texture.image = VK_NULL_HANDLE;
+                texture.allocation = VK_NULL_HANDLE;
+                texture.width = 0;
+                texture.height = 0;
+            }
         }
-        if (albedo_texture.image != VK_NULL_HANDLE) {
-            vmaDestroyImage(context.allocator, albedo_texture.image, albedo_texture.allocation);
-            albedo_texture.image = VK_NULL_HANDLE;
-            albedo_texture.allocation = VK_NULL_HANDLE;
-            albedo_texture.width = 0;
-            albedo_texture.height = 0;
-        }
+        materials.clear();
 
 
         if (vk_scene_descriptor_set_layout != VK_NULL_HANDLE) {
@@ -1796,6 +1837,43 @@ namespace application {
         ImGui::Text("Material");
         ImGui::ColorEdit3("Specular color", ui_specular_color);
         ImGui::SliderFloat("Shininess", &ui_shininess, 1, 256);
+
+        ImGui::Separator();
+        ImGui::Text("Textures");
+        {
+            struct FigureEntry {
+                Figure figure;
+                const char *name;
+            };
+            static constexpr FigureEntry figure_entries[] = {
+                {Figure::Cube, "Cube"},
+                {Figure::Cone, "Cone"},
+                {Figure::Cone2, "Cone 2"},
+            };
+            for (const auto &entry: figure_entries) {
+                const auto it = objects.find(entry.figure);
+                if (it == objects.end() || materials.empty())
+                    continue;
+
+                Object &object = it->second;
+                if (object.material_index >= materials.size())
+                    object.material_index = 0;
+
+                const std::string combo_label = std::string(entry.name) + "##material_combo";
+                if (ImGui::BeginCombo(combo_label.c_str(), materials[object.material_index].name.c_str())) {
+                    for (uint32_t i = 0; i < materials.size(); ++i) {
+                        const bool selected = (object.material_index == i);
+                        const std::string item_label = materials[i].name + "##" + entry.name +
+                                                       "_material_" + std::to_string(i);
+                        if (ImGui::Selectable(item_label.c_str(), selected))
+                            object.material_index = i;
+                        if (selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+        }
 
         ImGui::Separator();
         ImGui::Text("Animation");
@@ -2055,9 +2133,12 @@ namespace application {
             vkCmdBindIndexBuffer(fd.command_buffer, object.vk_index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
             const uint32_t dynamic_offset = static_cast<uint32_t>(model_index(figure) * uniforms_stride);
+            const size_t material_index = object.material_index < materials.size()
+                                              ? object.material_index
+                                              : 0;
             const VkDescriptorSet descriptor_sets[2] = {
                 vk_scene_descriptor_set,
-                vk_model_descriptor_set,
+                materials[material_index].set,
             };
             vkCmdBindDescriptorSets(
                 fd.command_buffer,
