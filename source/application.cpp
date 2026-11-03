@@ -94,6 +94,205 @@ namespace application {
         float normal[3];
     };
 
+    namespace {
+        struct UploadContext {
+            static constexpr VkDeviceSize staging_buffer_size = 64ull * 1024ull * 1024ull;
+
+            VkDevice device = VK_NULL_HANDLE;
+            VmaAllocator allocator = VK_NULL_HANDLE;
+            VkCommandPool command_pool = VK_NULL_HANDLE;
+            VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+            VkFence fence = VK_NULL_HANDLE;
+            VkBuffer staging_buffer = VK_NULL_HANDLE;
+            VmaAllocation staging_buffer_allocation = VK_NULL_HANDLE;
+            void *mapped_memory = nullptr;
+            VkDeviceSize offset = 0;
+            bool recording = false;
+
+            bool create(const graphics::internal::Context &context) {
+                device = context.device;
+                allocator = context.allocator;
+
+                const VkCommandPoolCreateInfo command_pool_info = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                    .queueFamilyIndex = context.graphics_queue_index,
+                };
+                if (vkCreateCommandPool(device, &command_pool_info, nullptr, &command_pool) != VK_SUCCESS) {
+                    std::cerr << "Failed to create upload command pool\n";
+                    destroy();
+                    return false;
+                }
+
+                const VkCommandBufferAllocateInfo command_buffer_info = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                    .commandPool = command_pool,
+                    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                    .commandBufferCount = 1,
+                };
+                if (vkAllocateCommandBuffers(device, &command_buffer_info, &command_buffer) != VK_SUCCESS) {
+                    std::cerr << "Failed to allocate upload command buffer\n";
+                    destroy();
+                    return false;
+                }
+
+                const VkFenceCreateInfo fence_info = {
+                    .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                };
+                if (vkCreateFence(device, &fence_info, nullptr, &fence) != VK_SUCCESS) {
+                    std::cerr << "Failed to create upload fence\n";
+                    destroy();
+                    return false;
+                }
+
+                const VkBufferCreateInfo staging_info = {
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                    .size = staging_buffer_size,
+                    .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                };
+                constexpr VmaAllocationCreateInfo staging_allocation_info = {
+                    .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                    .usage = VMA_MEMORY_USAGE_AUTO,
+                };
+                VmaAllocationInfo allocation_info{};
+                if (vmaCreateBuffer(allocator, &staging_info, &staging_allocation_info,
+                                    &staging_buffer, &staging_buffer_allocation,
+                                    &allocation_info) != VK_SUCCESS) {
+                    std::cerr << "Failed to create staging buffer\n";
+                    destroy();
+                    return false;
+                }
+                mapped_memory = allocation_info.pMappedData;
+                return true;
+            }
+
+            bool begin() {
+                if (command_buffer == VK_NULL_HANDLE || recording) {
+                    std::cerr << "Upload context is not ready to begin recording\n";
+                    return false;
+                }
+
+                const VkCommandBufferBeginInfo begin_info = {
+                    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                };
+                if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS) {
+                    std::cerr << "Failed to begin upload command buffer\n";
+                    return false;
+                }
+                recording = true;
+                return true;
+            }
+
+            VkDeviceSize stage(const void *data, const size_t size) {
+                if (!recording || (data == nullptr && size != 0)) {
+                    std::cerr << "Invalid data or upload context is not recording\n";
+                    return VK_WHOLE_SIZE;
+                }
+
+                if (offset > VK_WHOLE_SIZE - 15) {
+                    std::cerr << "Staging buffer offset overflow\n";
+                    return VK_WHOLE_SIZE;
+                }
+                const VkDeviceSize aligned_offset = (offset + 15) & ~VkDeviceSize(15);
+                const VkDeviceSize upload_size = static_cast<VkDeviceSize>(size);
+                if (aligned_offset > staging_buffer_size ||
+                    upload_size > staging_buffer_size - aligned_offset) {
+                    std::cerr << "Staging buffer capacity exceeded (64 MiB)\n";
+                    return VK_WHOLE_SIZE;
+                }
+
+                std::memcpy(static_cast<uint8_t *>(mapped_memory) + aligned_offset, data, size);
+                offset = aligned_offset + upload_size;
+                return aligned_offset;
+            }
+
+            bool end_and_wait() {
+                if (!recording) {
+                    std::cerr << "Upload context is not recording\n";
+                    return false;
+                }
+
+                if (offset > 0) {
+                    if (vmaFlushAllocation(allocator, staging_buffer_allocation, 0, offset) != VK_SUCCESS) {
+                        std::cerr << "Failed to flush staging buffer memory\n";
+                        recording = false;
+                        return false;
+                    }
+
+                    const VkMemoryBarrier memory_barrier = {
+                        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                        .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT,
+                    };
+                    vkCmdPipelineBarrier(command_buffer,
+                                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                                         0, 1, &memory_barrier, 0, nullptr, 0, nullptr);
+                }
+
+                if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+                    std::cerr << "Failed to end upload command buffer\n";
+                    recording = false;
+                    return false;
+                }
+                recording = false;
+
+                const VkSubmitInfo submit_info = {
+                    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .commandBufferCount = 1,
+                    .pCommandBuffers = &command_buffer,
+                };
+                if (vkQueueSubmit(graphics::internal::context.graphics_queue, 1,
+                                  &submit_info, fence) != VK_SUCCESS) {
+                    std::cerr << "Failed to submit upload command buffer\n";
+                    return false;
+                }
+                if (vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+                    std::cerr << "Failed to wait for upload fence\n";
+                    return false;
+                }
+
+                if (vkResetCommandPool(device, command_pool, 0) != VK_SUCCESS) {
+                    std::cerr << "Failed to reset upload command pool\n";
+                    return false;
+                }
+                if (vkResetFences(device, 1, &fence) != VK_SUCCESS) {
+                    std::cerr << "Failed to reset upload fence\n";
+                    return false;
+                }
+                offset = 0;
+                return true;
+            }
+
+            void destroy() {
+                if (staging_buffer != VK_NULL_HANDLE) {
+                    vmaDestroyBuffer(allocator, staging_buffer, staging_buffer_allocation);
+                    staging_buffer = VK_NULL_HANDLE;
+                    staging_buffer_allocation = VK_NULL_HANDLE;
+                    mapped_memory = nullptr;
+                }
+                if (fence != VK_NULL_HANDLE) {
+                    vkDestroyFence(device, fence, nullptr);
+                    fence = VK_NULL_HANDLE;
+                }
+                if (command_pool != VK_NULL_HANDLE) {
+                    vkDestroyCommandPool(device, command_pool, nullptr);
+                    command_pool = VK_NULL_HANDLE;
+                    command_buffer = VK_NULL_HANDLE;
+                }
+                device = VK_NULL_HANDLE;
+                allocator = VK_NULL_HANDLE;
+                offset = 0;
+                recording = false;
+            }
+        };
+
+        UploadContext upload_context{};
+    }
+
     struct Object {
         uint32_t vk_index_count{};
 
@@ -110,62 +309,94 @@ namespace application {
             const std::vector<Vertex> &vertexes,
             const std::vector<uint32_t> &indexes
         ) {
+            const VkDeviceSize vertex_size = sizeof(Vertex) * vertexes.size();
             const VkBufferCreateInfo vertex_buffer = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size = sizeof(Vertex) * vertexes.size(),
-                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                .size = vertex_size,
+                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             };
 
             constexpr VmaAllocationCreateInfo vertex_buffer_allocation = {
-                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                 .usage = VMA_MEMORY_USAGE_AUTO,
             };
 
-            VmaAllocationInfo vertex_allocation_info{};
             if (vmaCreateBuffer(
                     context.allocator,
                     &vertex_buffer,
                     &vertex_buffer_allocation,
                     &vk_vertex_buffer,
                     &vk_vertex_buffer_allocation,
-                    &vertex_allocation_info
+                    nullptr
                 ) != VK_SUCCESS) {
                 std::cerr << "Failed to create and allocate vertex buffer\n";
                 return false;
             }
 
-            std::memcpy(vertex_allocation_info.pMappedData, vertexes.data(), sizeof(Vertex) * vertexes.size());
-            std::cout << "Successfully created, allocated and mapped vertex buffer memory\n";
+            const VkDeviceSize vertex_offset = upload_context.stage(vertexes.data(),
+                                                                     static_cast<size_t>(vertex_size));
+            if (vertex_offset == VK_WHOLE_SIZE) {
+                vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
+                vk_vertex_buffer = VK_NULL_HANDLE;
+                vk_vertex_buffer_allocation = VK_NULL_HANDLE;
+                return false;
+            }
+            const VkBufferCopy vertex_copy = {
+                .srcOffset = vertex_offset,
+                .dstOffset = 0,
+                .size = vertex_size,
+            };
+            vkCmdCopyBuffer(upload_context.command_buffer, upload_context.staging_buffer,
+                            vk_vertex_buffer, 1, &vertex_copy);
+            std::cout << "Successfully created GPU vertex buffer\n";
 
-            vk_index_count = indexes.size();
+            vk_index_count = static_cast<uint32_t>(indexes.size());
+            const VkDeviceSize index_size = sizeof(uint32_t) * indexes.size();
             const VkBufferCreateInfo index_buffer = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size = sizeof(uint32_t) * indexes.size(),
-                .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                .size = index_size,
+                .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             };
 
             constexpr VmaAllocationCreateInfo index_buffer_allocation = {
-                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                 .usage = VMA_MEMORY_USAGE_AUTO,
             };
 
-            VmaAllocationInfo index_allocation_info{};
             if (vmaCreateBuffer(
                     context.allocator,
                     &index_buffer,
                     &index_buffer_allocation,
                     &vk_index_buffer,
                     &vk_index_buffer_allocation,
-                    &index_allocation_info
+                    nullptr
                 ) != VK_SUCCESS) {
                 std::cerr << "Failed to create and allocate index buffer\n";
+                vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
+                vk_vertex_buffer = VK_NULL_HANDLE;
+                vk_vertex_buffer_allocation = VK_NULL_HANDLE;
                 return false;
             }
 
-            std::memcpy(index_allocation_info.pMappedData, indexes.data(), sizeof(uint32_t) * indexes.size());
-            std::cout << "Successfully created, allocated and mapped index buffer memory\n";
+            const VkDeviceSize index_offset = upload_context.stage(indexes.data(),
+                                                                    static_cast<size_t>(index_size));
+            if (index_offset == VK_WHOLE_SIZE) {
+                vmaDestroyBuffer(context.allocator, vk_index_buffer, vk_index_buffer_allocation);
+                vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
+                vk_index_buffer = VK_NULL_HANDLE;
+                vk_index_buffer_allocation = VK_NULL_HANDLE;
+                vk_vertex_buffer = VK_NULL_HANDLE;
+                vk_vertex_buffer_allocation = VK_NULL_HANDLE;
+                return false;
+            }
+            const VkBufferCopy index_copy = {
+                .srcOffset = index_offset,
+                .dstOffset = 0,
+                .size = index_size,
+            };
+            vkCmdCopyBuffer(upload_context.command_buffer, upload_context.staging_buffer,
+                            vk_index_buffer, 1, &index_copy);
+            std::cout << "Successfully created GPU index buffer\n";
             return true;
         }
 
@@ -583,6 +814,22 @@ namespace application {
     bool initialize() {
         auto &context = graphics::internal::context;
 
+        if (!upload_context.create(context))
+            return false;
+
+        struct UploadContextGuard {
+            UploadContext &upload;
+            bool keep = false;
+
+            ~UploadContextGuard() {
+                if (!keep)
+                    upload.destroy();
+            }
+        } upload_guard{upload_context};
+
+        if (!upload_context.begin())
+            return false;
+
         const auto cone_vertexes = make_cone_vertexes(CONE_SEGMENTS);
         const auto cone_indexes = make_cone_indexes(CONE_SEGMENTS);
 
@@ -952,26 +1199,44 @@ namespace application {
             const auto line_verts = make_line_cone_vertexes(24);
             vk_line_cone_vertex_count = static_cast<uint32_t>(line_verts.size());
 
+            const VkDeviceSize line_vertex_size = sizeof(Vertex) * line_verts.size();
             const VkBufferCreateInfo bi = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                .size = sizeof(Vertex) * line_verts.size(),
-                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                .size = line_vertex_size,
+                .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
             };
             constexpr VmaAllocationCreateInfo ai = {
-                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
                 .usage = VMA_MEMORY_USAGE_AUTO,
             };
-            VmaAllocationInfo out{};
             if (vmaCreateBuffer(context.allocator, &bi, &ai,
                                 &vk_line_cone_vertex_buffer,
                                 &vk_line_cone_vertex_buffer_allocation,
-                                &out) != VK_SUCCESS) {
+                                nullptr) != VK_SUCCESS) {
                 std::cerr << "Failed to create line cone vertex buffer\n";
                 return false;
             }
-            std::memcpy(out.pMappedData, line_verts.data(), sizeof(Vertex) * line_verts.size());
+
+            const VkDeviceSize line_vertex_offset = upload_context.stage(
+                line_verts.data(), static_cast<size_t>(line_vertex_size));
+            if (line_vertex_offset == VK_WHOLE_SIZE) {
+                vmaDestroyBuffer(context.allocator, vk_line_cone_vertex_buffer,
+                                 vk_line_cone_vertex_buffer_allocation);
+                vk_line_cone_vertex_buffer = VK_NULL_HANDLE;
+                vk_line_cone_vertex_buffer_allocation = VK_NULL_HANDLE;
+                return false;
+            }
+            const VkBufferCopy line_vertex_copy = {
+                .srcOffset = line_vertex_offset,
+                .dstOffset = 0,
+                .size = line_vertex_size,
+            };
+            vkCmdCopyBuffer(upload_context.command_buffer, upload_context.staging_buffer,
+                            vk_line_cone_vertex_buffer, 1, &line_vertex_copy);
         }
+
+        if (!upload_context.end_and_wait())
+            return false;
 
         // --- Pipeline layout с push-constant ---
         {
@@ -1114,6 +1379,7 @@ namespace application {
             }
         }
 
+        upload_guard.keep = true;
         return true;
     }
 
@@ -1221,6 +1487,8 @@ namespace application {
                 object.vk_index_buffer_allocation = VK_NULL_HANDLE;
             }
         }
+
+        upload_context.destroy();
     }
 
     void update(const double time) {
