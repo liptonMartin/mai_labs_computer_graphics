@@ -1,10 +1,12 @@
 #version 450 core
 
-layout(location=0) in vec3 in_color;
 layout(location=1) in vec3 in_normal;
 layout(location=2) in vec3 in_world_pos;
+layout(location=3) in vec2 in_uv;
 
 layout(location=0) out vec4 out_color;
+
+const bool DEBUG_UV = true;
 
 layout(std140, set=0, binding=0) uniform SceneUniforms {
     mat4 view;
@@ -59,6 +61,11 @@ layout(std430, set=0, binding=2) readonly buffer SpotLights {
 } spotLights;
 
 void main() {
+    if (DEBUG_UV) {
+        out_color = vec4(in_uv, 0.0, 1.0);
+        return;
+    }
+
     const vec3 N = normalize(in_normal);
     const vec3 V = normalize(scene.cameraPos - in_world_pos);
 
@@ -73,7 +80,7 @@ void main() {
         (model_data.albedo * NdotLd + model_data.specularColor * spec_d)
         * scene.dir_color * scene.dir_intensity;
 
-vec3 point_accum = vec3(0.0);
+    vec3 point_accum = vec3(0.0);
     const uint pl_count = min(scene.pointLightCount, uint(pointLights.lights.length()));
     for (uint i = 0u; i < pl_count; ++i) {
         const PointLight pl = pointLights.lights[i];

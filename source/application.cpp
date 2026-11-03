@@ -90,8 +90,8 @@ namespace application {
 
     struct Vertex {
         float pos[3];
-        float color[3];
         float normal[3];
+        float uv[2];
     };
 
     namespace {
@@ -402,38 +402,20 @@ namespace application {
 
     };
 
-    std::array<float, 3> color_from_pos(float x, float y, float z) {
-        return {
-            x * 0.5f + 0.5f,
-            y * 0.5f + 0.5f,
-            z * 0.5f + 0.5f,
-        };
-    }
-
     std::vector<Vertex> make_cone_vertexes(const int n) {
         std::vector<Vertex> array;
-        array.reserve(2 * n + 2);
+        array.reserve(3 * n + 3);
 
         constexpr float apex_y = 1;
         constexpr float base_y = -1;
         constexpr float radius = 0.6f;
-        const float height = apex_y - base_y; // = 2
+        const float height = apex_y - base_y;
+        const float step = 2.0f * std::numbers::pi_v<float> / static_cast<float>(n);
 
-        // 0: вершина конуса
-        {
-            const auto color = color_from_pos(0, apex_y, 0);
-            array.push_back(Vertex{
-                {0, apex_y, 0},
-                {color[0], color[1], color[2]},
-                {0, 1, 0}
-            });
-        }
-
-        // 1..n: боковая поверхность (вершины на окружности основания)
-        for (int i = 0; i < n; ++i) {
-            const float step = 2 * std::numbers::pi_v<float> / static_cast<float>(n);
+        // 0..n: кольцо основания боковой поверхности, включая дубликат для UV-шва.
+        for (int i = 0; i <= n; ++i) {
+            const float u = static_cast<float>(i) / static_cast<float>(n);
             const float corner = static_cast<float>(i) * step;
-
             const float x = std::cos(corner) * radius;
             const float z = std::sin(corner) * radius;
 
@@ -442,37 +424,45 @@ namespace application {
             const float nz = height * std::sin(corner);
             const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
 
-            const auto color = color_from_pos(x, base_y, z);
             array.push_back(Vertex{
                 {x, base_y, z},
-                {color[0], color[1], color[2]},
-                {nx / len, ny / len, nz / len}
+                {nx / len, ny / len, nz / len},
+                {u, 1.0f}
             });
         }
 
-        // n+1: центр основания
-        {
-            const auto color = color_from_pos(0, base_y, 0);
-            array.push_back(Vertex{
-                {0, base_y, 0},
-                {color[0], color[1], color[2]},
-                {0, -1, 0}
-            });
-        }
-
-        // n+2..2n+1: дубли вершин окружности для плоского основания
+        // n+1..2n: отдельная вершина конуса для каждого сегмента.
         for (int i = 0; i < n; ++i) {
-            const float step = 2 * std::numbers::pi_v<float> / static_cast<float>(n);
-            const float corner = static_cast<float>(i) * step;
+            const float middle_angle = (static_cast<float>(i) + 0.5f) * step;
+            const float nx = height * std::cos(middle_angle);
+            const float ny = radius;
+            const float nz = height * std::sin(middle_angle);
+            const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
 
+            array.push_back(Vertex{
+                {0.0f, apex_y, 0.0f},
+                {nx / len, ny / len, nz / len},
+                {(static_cast<float>(i) + 0.5f) / static_cast<float>(n), 0.0f}
+            });
+        }
+
+        // 2n+1: центр плоского основания.
+        array.push_back(Vertex{
+            {0.0f, base_y, 0.0f},
+            {0.0f, -1.0f, 0.0f},
+            {0.5f, 0.5f}
+        });
+
+        // 2n+2..3n+2: отдельное кольцо с нормалями основания и UV-кругом.
+        for (int i = 0; i <= n; ++i) {
+            const float corner = static_cast<float>(i) * step;
             const float x = std::cos(corner) * radius;
             const float z = std::sin(corner) * radius;
 
-            const auto color = color_from_pos(x, base_y, z);
             array.push_back(Vertex{
                 {x, base_y, z},
-                {color[0], color[1], color[2]},
-                {0, -1, 0}
+                {0.0f, -1.0f, 0.0f},
+                {0.5f + 0.5f * std::cos(corner), 0.5f + 0.5f * std::sin(corner)}
             });
         }
 
@@ -483,16 +473,21 @@ namespace application {
         std::vector<uint32_t> indexes;
         indexes.reserve(n * 6);
 
-        const uint32_t apex = 0;
-        const uint32_t base_center = n + 1;
+        const uint32_t side_ring = 0;
+        const uint32_t side_apex = static_cast<uint32_t>(n + 1);
+        const uint32_t base_center = static_cast<uint32_t>(2 * n + 1);
+        const uint32_t base_ring = static_cast<uint32_t>(2 * n + 2);
 
         for (int i = 0; i < n; ++i) {
-            const uint32_t current = 1 + i;
-            const uint32_t next = 1 + (i + 1) % n;
+            const uint32_t current = side_ring + static_cast<uint32_t>(i);
+            const uint32_t next = current + 1;
+            const uint32_t apex = side_apex + static_cast<uint32_t>(i);
+            // Сохраняем исходный порядок обхода бокового треугольника.
             indexes.insert(indexes.end(), {apex, current, next});
 
-            const uint32_t base_current = n + 2 + i;
-            const uint32_t base_next = n + 2 + (i + 1) % n;
+            const uint32_t base_current = base_ring + static_cast<uint32_t>(i);
+            const uint32_t base_next = base_current + 1;
+            // Сохраняем исходный порядок обхода треугольника основания.
             indexes.insert(indexes.end(), {base_center, base_current, base_next});
         }
 
@@ -501,53 +496,40 @@ namespace application {
 
     std::vector<Vertex> make_cube_vertexes() {
         constexpr float s = 0.3f;
-        const std::array<float, 3> red = {1, 0, 0};
-        const std::array<float, 3> green = {0, 1, 0};
+        constexpr std::array<std::array<float, 2>, 4> face_uv = {{
+            {1.0f, 0.0f}, // TR
+            {0.0f, 0.0f}, // TL
+            {0.0f, 1.0f}, // BL
+            {1.0f, 1.0f}, // BR
+        }};
 
         std::vector<Vertex> array;
         array.reserve(24);
 
-        auto push = [&](float x, float y, float z,
-                        const std::array<float, 3> &c,
-                        const std::array<float, 3> &n) {
-            array.push_back(Vertex{{x, y, z}, {c[0], c[1], c[2]}, {n[0], n[1], n[2]}});
+        auto push_face = [&](const std::array<std::array<float, 3>, 4> &positions,
+                             const std::array<float, 3> &normal) {
+            for (size_t i = 0; i < positions.size(); ++i) {
+                array.push_back(Vertex{
+                    {positions[i][0], positions[i][1], positions[i][2]},
+                    {normal[0], normal[1], normal[2]},
+                    {face_uv[i][0], face_uv[i][1]}
+                });
+            }
         };
 
+        // Каждая грань перечислена снаружи в порядке TR, TL, BL, BR.
         // FRONT (+Z)
-        push(s, s, s, red, {0, 0, 1}); // 0 TR
-        push(-s, s, s, red, {0, 0, 1}); // 1 TL
-        push(-s, -s, s, green, {0, 0, 1}); // 2 BL
-        push(s, -s, s, green, {0, 0, 1}); // 3 BR
-
+        push_face({{{s, s, s}, {-s, s, s}, {-s, -s, s}, {s, -s, s}}}, {0, 0, 1});
         // BACK (-Z)
-        push(-s, s, -s, red, {0, 0, -1}); // 4
-        push(s, s, -s, red, {0, 0, -1}); // 5
-        push(s, -s, -s, green, {0, 0, -1}); // 6
-        push(-s, -s, -s, green, {0, 0, -1}); // 7
-
+        push_face({{{-s, s, -s}, {s, s, -s}, {s, -s, -s}, {-s, -s, -s}}}, {0, 0, -1});
         // RIGHT (+X)
-        push(s, s, -s, red, {1, 0, 0}); // 8
-        push(s, s, s, red, {1, 0, 0}); // 9
-        push(s, -s, s, green, {1, 0, 0}); // 10
-        push(s, -s, -s, green, {1, 0, 0}); // 11
-
+        push_face({{{s, s, -s}, {s, s, s}, {s, -s, s}, {s, -s, -s}}}, {1, 0, 0});
         // LEFT (-X)
-        push(-s, s, s, red, {-1, 0, 0}); // 12
-        push(-s, s, -s, red, {-1, 0, 0}); // 13
-        push(-s, -s, -s, green, {-1, 0, 0}); // 14
-        push(-s, -s, s, green, {-1, 0, 0}); // 15
-
+        push_face({{{-s, s, s}, {-s, s, -s}, {-s, -s, -s}, {-s, -s, s}}}, {-1, 0, 0});
         // TOP (+Y)
-        push(s, s, -s, red, {0, 1, 0}); // 16
-        push(-s, s, -s, red, {0, 1, 0}); // 17
-        push(-s, s, s, red, {0, 1, 0}); // 18
-        push(s, s, s, red, {0, 1, 0}); // 19
-
+        push_face({{{s, s, -s}, {-s, s, -s}, {-s, s, s}, {s, s, s}}}, {0, 1, 0});
         // BOTTOM (-Y)
-        push(s, -s, s, green, {0, -1, 0}); // 20
-        push(-s, -s, s, green, {0, -1, 0}); // 21
-        push(-s, -s, -s, green, {0, -1, 0}); // 22
-        push(s, -s, -s, green, {0, -1, 0}); // 23
+        push_face({{{s, -s, s}, {-s, -s, s}, {-s, -s, -s}, {s, -s, -s}}}, {0, -1, 0});
 
         return array;
     }
@@ -578,12 +560,12 @@ namespace application {
             const float x1 = std::cos(a1), y1 = std::sin(a1);
 
             // линия apex -> точка на окружности
-            arr.push_back(Vertex{{0.0f, 0.0f, 0.0f}, {1, 1, 1}, {0, 0, 0}});
-            arr.push_back(Vertex{{x0, y0, 1.0f}, {1, 1, 1}, {0, 0, 0}});
+            arr.push_back(Vertex{{0.0f, 0.0f, 0.0f}, {0, 0, 0}, {0, 0}});
+            arr.push_back(Vertex{{x0, y0, 1.0f}, {0, 0, 0}, {0, 0}});
 
             // линия по окружности
-            arr.push_back(Vertex{{x0, y0, 1.0f}, {1, 1, 1}, {0, 0, 0}});
-            arr.push_back(Vertex{{x1, y1, 1.0f}, {1, 1, 1}, {0, 0, 0}});
+            arr.push_back(Vertex{{x0, y0, 1.0f}, {0, 0, 0}, {0, 0}});
+            arr.push_back(Vertex{{x1, y1, 1.0f}, {0, 0, 0}, {0, 0}});
         }
 
         return arr;
@@ -890,13 +872,13 @@ namespace application {
                 .location = 1,
                 .binding = 0,
                 .format = VK_FORMAT_R32G32B32_SFLOAT,
-                .offset = offsetof(Vertex, color),
+                .offset = offsetof(Vertex, normal),
             },
             {
                 .location = 2,
                 .binding = 0,
-                .format = VK_FORMAT_R32G32B32_SFLOAT,
-                .offset = offsetof(Vertex, normal),
+                .format = VK_FORMAT_R32G32_SFLOAT,
+                .offset = offsetof(Vertex, uv),
             },
         };
 
