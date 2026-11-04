@@ -314,23 +314,19 @@ namespace application {
         struct Material {
             std::string name;
             Texture albedo;
+            Texture specular; // опционально: view == VK_NULL_HANDLE -> используется black_texture
+            Texture emissive; // опционально: view == VK_NULL_HANDLE -> используется black_texture
             VkDescriptorSet set = VK_NULL_HANDLE;
         };
 
+        Texture black_texture{}; // служебная заглушка 1x1 (0,0,0,255)
         VkSampler albedo_sampler = VK_NULL_HANDLE;
 
-        bool create_texture_from_file(UploadContext &upload, const std::string &path,
-                                      const VkFormat format, Texture &texture) {
-            int width = 0;
-            int height = 0;
-            int source_channels = 0;
-            stbi_uc *pixels = stbi_load(path.c_str(), &width, &height, &source_channels, STBI_rgb_alpha);
-            if (pixels == nullptr || width <= 0 || height <= 0) {
-                std::cerr << "Failed to load texture '" << path << "': " << stbi_failure_reason() << "\n";
-                if (pixels != nullptr)
-                    stbi_image_free(pixels);
+        bool create_texture_from_pixels(UploadContext &upload, const stbi_uc *pixels,
+                                        const int width, const int height,
+                                        const VkFormat format, Texture &texture) {
+            if (pixels == nullptr || width <= 0 || height <= 0)
                 return false;
-            }
 
             texture.width = static_cast<uint32_t>(width);
             texture.height = static_cast<uint32_t>(height);
@@ -356,7 +352,6 @@ namespace application {
             if (vmaCreateImage(graphics::internal::context.allocator, &image_info, &allocation_info,
                                &texture.image, &texture.allocation, nullptr) != VK_SUCCESS) {
                 std::cerr << "Failed to create texture image\n";
-                stbi_image_free(pixels);
                 return false;
             }
 
@@ -376,12 +371,10 @@ namespace application {
             if (vkCreateImageView(graphics::internal::context.device, &view_info, nullptr,
                                   &texture.view) != VK_SUCCESS) {
                 std::cerr << "Failed to create texture image view\n";
-                stbi_image_free(pixels);
                 return false;
             }
 
             const VkDeviceSize staging_offset = upload.stage(pixels, static_cast<size_t>(pixel_size));
-            stbi_image_free(pixels);
             if (staging_offset == VK_WHOLE_SIZE)
                 return false;
 
@@ -445,6 +438,38 @@ namespace application {
                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                                  0, 0, nullptr, 0, nullptr, 1, &to_shader_read);
             return true;
+        }
+
+        bool create_texture_from_file(UploadContext &upload, const std::string &path,
+                                      const VkFormat format, Texture &texture) {
+            int width = 0;
+            int height = 0;
+            int source_channels = 0;
+            stbi_uc *pixels = stbi_load(path.c_str(), &width, &height, &source_channels, STBI_rgb_alpha);
+            if (pixels == nullptr || width <= 0 || height <= 0) {
+                std::cerr << "Failed to load texture '" << path << "': " << stbi_failure_reason() << "\n";
+                if (pixels != nullptr)
+                    stbi_image_free(pixels);
+                return false;
+            }
+
+            const bool ok = create_texture_from_pixels(upload, pixels, width, height, format, texture);
+            stbi_image_free(pixels);
+            return ok;
+        }
+
+        void destroy_texture(Texture &texture) {
+            if (texture.view != VK_NULL_HANDLE) {
+                vkDestroyImageView(graphics::internal::context.device, texture.view, nullptr);
+                texture.view = VK_NULL_HANDLE;
+            }
+            if (texture.image != VK_NULL_HANDLE) {
+                vmaDestroyImage(graphics::internal::context.allocator, texture.image, texture.allocation);
+                texture.image = VK_NULL_HANDLE;
+                texture.allocation = VK_NULL_HANDLE;
+            }
+            texture.width = 0;
+            texture.height = 0;
         }
     }
 
@@ -816,14 +841,22 @@ namespace application {
 
         struct MaterialSource {
             const char *name;
-            const char *path;
+            const char *albedo_path;
+            const char *specular_path; // nullptr -> заглушка
+            const char *emissive_path; // nullptr -> заглушка
         };
 
         constexpr MaterialSource material_sources[] = {
-            {"UV test", "../assets/test_albedo.png"},
-            {"Bricks", "../assets/mat_bricks.png"},
-            {"Stripes", "../assets/mat_stripes.png"},
-            {"Rings", "../assets/mat_rings.png"},
+            {"UV test", "../assets/test_albedo.png", nullptr, nullptr},
+            {
+                "Bricks", "../assets/mat_bricks.png",
+                "../assets/mat_bricks_spec.png", "../assets/mat_bricks_emissive.png"
+            },
+            {"Stripes", "../assets/mat_stripes.png", "../assets/mat_stripes_spec.png", nullptr},
+            {
+                "Rings", "../assets/mat_rings.png",
+                "../assets/mat_rings_spec.png", "../assets/mat_rings_emissive.png"
+            },
         };
         constexpr size_t material_source_count = sizeof(material_sources) / sizeof(material_sources[0]);
         constexpr uint32_t MAX_MATERIALS = 16;
@@ -990,11 +1023,28 @@ namespace application {
         if (!upload_context.begin())
             return false;
 
+        {
+            constexpr stbi_uc black_pixel[4] = {0, 0, 0, 255};
+            if (!create_texture_from_pixels(upload_context, black_pixel, 1, 1,
+                                            VK_FORMAT_R8G8B8A8_UNORM, black_texture))
+                return false;
+        }
+
         materials.resize(material_source_count);
         for (size_t i = 0; i < material_source_count; ++i) {
-            materials[i].name = material_sources[i].name;
-            if (!create_texture_from_file(upload_context, material_sources[i].path,
-                                          VK_FORMAT_R8G8B8A8_SRGB, materials[i].albedo))
+            const MaterialSource &source = material_sources[i];
+            Material &material = materials[i];
+            material.name = source.name;
+            if (!create_texture_from_file(upload_context, source.albedo_path,
+                                          VK_FORMAT_R8G8B8A8_SRGB, material.albedo))
+                return false;
+            if (source.specular_path != nullptr &&
+                !create_texture_from_file(upload_context, source.specular_path,
+                                          VK_FORMAT_R8G8B8A8_UNORM, material.specular))
+                return false;
+            if (source.emissive_path != nullptr &&
+                !create_texture_from_file(upload_context, source.emissive_path,
+                                          VK_FORMAT_R8G8B8A8_SRGB, material.emissive))
                 return false;
         }
 
@@ -1187,7 +1237,7 @@ namespace application {
             return false;
         }
 
-        const VkDescriptorSetLayoutBinding model_bindings[2] = {
+        const VkDescriptorSetLayoutBinding model_bindings[4] = {
             {
                 .binding = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
@@ -1200,10 +1250,22 @@ namespace application {
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
             },
+            {
+                .binding = 2,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            },
+            {
+                .binding = 3,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            },
         };
         const VkDescriptorSetLayoutCreateInfo model_layout_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = 2,
+            .bindingCount = 4,
             .pBindings = model_bindings,
         };
         if (vkCreateDescriptorSetLayout(
@@ -1264,7 +1326,7 @@ namespace application {
             {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4},
             {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 4 + MAX_MATERIALS},
             {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4},
-            {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 + MAX_MATERIALS},
+            {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 + 3 * MAX_MATERIALS},
         };
         const VkDescriptorPoolCreateInfo descriptor_pool_info = {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1384,17 +1446,20 @@ namespace application {
                 .offset = 0,
                 .range = sizeof(ModelUniforms),
             };
-            std::vector<VkDescriptorImageInfo> image_descriptor_infos(materials.size());
+            // Для каждого материала: albedo (binding 1), specular (2), emissive (3).
+            // Отсутствующие specular/emissive заменяются чёрной заглушкой.
+            std::vector<VkDescriptorImageInfo> image_descriptor_infos(materials.size() * 3);
             std::vector<VkWriteDescriptorSet> descriptor_writes;
-            descriptor_writes.reserve(materials.size() * 2);
+            descriptor_writes.reserve(materials.size() * 4);
             for (size_t i = 0; i < materials.size(); ++i) {
                 materials[i].set = material_sets[i];
 
-                image_descriptor_infos[i] = {
-                    .sampler = albedo_sampler,
-                    .imageView = materials[i].albedo.view,
-                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                const VkImageView views[3] = {
+                    materials[i].albedo.view,
+                    materials[i].specular.view != VK_NULL_HANDLE ? materials[i].specular.view : black_texture.view,
+                    materials[i].emissive.view != VK_NULL_HANDLE ? materials[i].emissive.view : black_texture.view,
                 };
+
                 descriptor_writes.push_back({
                     .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                     .dstSet = materials[i].set,
@@ -1403,14 +1468,21 @@ namespace application {
                     .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                     .pBufferInfo = &descriptor_buffer_info,
                 });
-                descriptor_writes.push_back({
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = materials[i].set,
-                    .dstBinding = 1,
-                    .descriptorCount = 1,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    .pImageInfo = &image_descriptor_infos[i],
-                });
+                for (uint32_t k = 0; k < 3; ++k) {
+                    image_descriptor_infos[i * 3 + k] = {
+                        .sampler = albedo_sampler,
+                        .imageView = views[k],
+                        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    };
+                    descriptor_writes.push_back({
+                        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                        .dstSet = materials[i].set,
+                        .dstBinding = 1 + k,
+                        .descriptorCount = 1,
+                        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        .pImageInfo = &image_descriptor_infos[i * 3 + k],
+                    });
+                }
             }
             vkUpdateDescriptorSets(context.device, static_cast<uint32_t>(descriptor_writes.size()),
                                    descriptor_writes.data(), 0, nullptr);
@@ -1679,20 +1751,12 @@ namespace application {
             albedo_sampler = VK_NULL_HANDLE;
         }
         for (auto &material: materials) {
-            Texture &texture = material.albedo;
-            if (texture.view != VK_NULL_HANDLE) {
-                vkDestroyImageView(context.device, texture.view, nullptr);
-                texture.view = VK_NULL_HANDLE;
-            }
-            if (texture.image != VK_NULL_HANDLE) {
-                vmaDestroyImage(context.allocator, texture.image, texture.allocation);
-                texture.image = VK_NULL_HANDLE;
-                texture.allocation = VK_NULL_HANDLE;
-                texture.width = 0;
-                texture.height = 0;
-            }
+            destroy_texture(material.albedo);
+            destroy_texture(material.specular);
+            destroy_texture(material.emissive);
         }
         materials.clear();
+        destroy_texture(black_texture);
 
 
         if (vk_scene_descriptor_set_layout != VK_NULL_HANDLE) {

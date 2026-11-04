@@ -32,6 +32,8 @@ layout(std140, set=1, binding=0) uniform ModelUniforms {
 } model_data;
 
 layout(set=1, binding=1) uniform sampler2D albedo_tex;
+layout(set=1, binding=2) uniform sampler2D specular_tex;
+layout(set=1, binding=3) uniform sampler2D emissive_tex;
 
 layout(push_constant) uniform PipelineConsts {
     uint flags;
@@ -102,6 +104,7 @@ layout(std430, set=0, binding=2) readonly buffer SpotLights {
 
 void main() {
     const vec3 albedo = sample_albedo();
+    const vec3 spec_mask = texture(specular_tex, in_uv).rgb;
     const vec3 N = normalize(in_normal);
     const vec3 V = normalize(scene.cameraPos - in_world_pos);
 
@@ -113,7 +116,7 @@ void main() {
     const float NdotHd = max(dot(N, Hd), 0.0);
     const float spec_d = (NdotLd > 0.0) ? pow(NdotHd, max(model_data.shininess, 1e-3)) : 0.0;
     const vec3 directional =
-        (albedo * NdotLd + model_data.specularColor * spec_d)
+        (albedo * NdotLd + model_data.specularColor * spec_mask * spec_d)
         * scene.dir_color * scene.dir_intensity;
 
     vec3 point_accum = vec3(0.0);
@@ -140,7 +143,7 @@ void main() {
         }
 
         const vec3 contribution =
-            (albedo * NdotL + model_data.specularColor * spec_p)
+            (albedo * NdotL + model_data.specularColor * spec_mask * spec_p)
             * pl.color * pl.intensity * attenuation * radius_falloff;
 
         point_accum += contribution;
@@ -180,14 +183,15 @@ void main() {
         }
 
         const vec3 contribution =
-            (albedo * NdotL + model_data.specularColor * spec_s)
+            (albedo * NdotL + model_data.specularColor * spec_mask * spec_s)
             * sl.color * sl.intensity * attenuation
             * spotAttenuation * radius_falloff;
 
         spot_accum += contribution;
     }
 
-    const vec3 final_color = ambient + directional + point_accum + spot_accum;
+    vec3 final_color = ambient + directional + point_accum + spot_accum;
+    final_color += texture(emissive_tex, in_uv).rgb;
 
     out_color = vec4(final_color, 1.0);
 }
