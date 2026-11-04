@@ -21,6 +21,7 @@ namespace application {
         Cube,
         Cone,
         Cone2,
+        Floor,
     };
 
     struct DirectionalLightUniform {
@@ -74,13 +75,15 @@ namespace application {
 
     struct ModelUniforms {
         math::Mat4 model; // offset 0
-        float albedo[3]; // offset 64
-        float shininess; // offset 76
+        float shininess; // offset 64
+        float _padding0[3]; // offset 68..80 (vec3 в std140 выравнивается по 16)
         float specularColor[3]; // offset 80
-        float _padding; // offset 92  -> размер 96
+        float _padding1; // offset 92  -> размер 96
     };
 
     static_assert(sizeof(ModelUniforms) == 96);
+    static_assert(offsetof(ModelUniforms, shininess) == 64);
+    static_assert(offsetof(ModelUniforms, specularColor) == 80);
 
     struct LightVizPushConstants {
         math::Mat4 mvp; // offset 0
@@ -322,6 +325,7 @@ namespace application {
         Texture black_texture{}; // служебная заглушка 1x1 (0,0,0,255)
         VkSampler albedo_sampler = VK_NULL_HANDLE;
 
+        // pixels: RGBA8, width * height * 4 байт; данные копируются в staging сразу.
         bool create_texture_from_pixels(UploadContext &upload, const stbi_uc *pixels,
                                         const int width, const int height,
                                         const VkFormat format, Texture &texture) {
@@ -516,7 +520,7 @@ namespace application {
             }
 
             const VkDeviceSize vertex_offset = upload_context.stage(vertexes.data(),
-                                                                     static_cast<size_t>(vertex_size));
+                                                                    static_cast<size_t>(vertex_size));
             if (vertex_offset == VK_WHOLE_SIZE) {
                 vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
                 vk_vertex_buffer = VK_NULL_HANDLE;
@@ -561,7 +565,7 @@ namespace application {
             }
 
             const VkDeviceSize index_offset = upload_context.stage(indexes.data(),
-                                                                    static_cast<size_t>(index_size));
+                                                                   static_cast<size_t>(index_size));
             if (index_offset == VK_WHOLE_SIZE) {
                 vmaDestroyBuffer(context.allocator, vk_index_buffer, vk_index_buffer_allocation);
                 vmaDestroyBuffer(context.allocator, vk_vertex_buffer, vk_vertex_buffer_allocation);
@@ -581,7 +585,6 @@ namespace application {
             std::cout << "Successfully created GPU index buffer\n";
             return true;
         }
-
     };
 
     std::vector<Vertex> make_cone_vertexes(const int n) {
@@ -680,12 +683,14 @@ namespace application {
 
     std::vector<Vertex> make_cube_vertexes() {
         constexpr float s = 0.3f;
-        constexpr std::array<std::array<float, 2>, 4> face_uv = {{
-            {1.0f, 0.0f}, // TR
-            {0.0f, 0.0f}, // TL
-            {0.0f, 1.0f}, // BL
-            {1.0f, 1.0f}, // BR
-        }};
+        constexpr std::array<std::array<float, 2>, 4> face_uv = {
+            {
+                {1.0f, 0.0f}, // TR
+                {0.0f, 0.0f}, // TL
+                {0.0f, 1.0f}, // BL
+                {1.0f, 1.0f}, // BR
+            }
+        };
 
         std::vector<Vertex> array;
         array.reserve(24);
@@ -728,6 +733,27 @@ namespace application {
         }
 
         return indexes;
+    }
+
+    constexpr float FLOOR_HALF_SIZE = 10.0f; // квадрат 20x20
+    constexpr float FLOOR_Y = -2.5f;
+    constexpr float FLOOR_UV_REPEAT = 4.0f; // UV 0..4, sampler с REPEAT
+
+    std::vector<Vertex> make_floor_vertexes() {
+        constexpr float h = FLOOR_HALF_SIZE;
+        constexpr float y = FLOOR_Y;
+        constexpr float uv = FLOOR_UV_REPEAT;
+
+        return {
+            Vertex{{h, y, -h}, {0.0f, 1.0f, 0.0f}, {uv, 0.0f}}, // TR
+            Vertex{{-h, y, -h}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}}, // TL
+            Vertex{{-h, y, h}, {0.0f, 1.0f, 0.0f}, {0.0f, uv}}, // BL
+            Vertex{{h, y, h}, {0.0f, 1.0f, 0.0f}, {uv, uv}}, // BR
+        };
+    }
+
+    std::vector<uint32_t> make_floor_indexes() {
+        return {0, 2, 1, 0, 3, 2};
     }
 
     std::vector<Vertex> make_line_cone_vertexes(const int segments) {
@@ -830,7 +856,7 @@ namespace application {
         constexpr int CONE_SEGMENTS = 24;
         constexpr uint32_t MAX_MODELS = 1024;
 
-        static_assert(static_cast<uint32_t>(Figure::Cone2) < MAX_MODELS);
+        static_assert(static_cast<uint32_t>(Figure::Floor) < MAX_MODELS);
 
         std::map<Figure, Object> objects{};
 
@@ -857,6 +883,7 @@ namespace application {
                 "Rings", "../assets/mat_rings.png",
                 "../assets/mat_rings_spec.png", "../assets/mat_rings_emissive.png"
             },
+            {"Floor", "../assets/mat_floor.png", "../assets/mat_floor_spec.png", nullptr},
         };
         constexpr size_t material_source_count = sizeof(material_sources) / sizeof(material_sources[0]);
         constexpr uint32_t MAX_MATERIALS = 16;
@@ -1089,9 +1116,21 @@ namespace application {
         if (!cone2.create_vertex_and_index_buffers(context, cone_vertexes, cone_indexes))
             return false;
 
+        const auto floor_vertexes = make_floor_vertexes();
+        const auto floor_indexes = make_floor_indexes();
+
+        auto floor = Object();
+        if (!floor.create_vertex_and_index_buffers(context, floor_vertexes, floor_indexes))
+            return false;
+        for (uint32_t i = 0; i < materials.size(); ++i) {
+            if (materials[i].name == "Floor")
+                floor.material_index = i;
+        }
+
         objects[Figure::Cone] = cone;
         objects[Figure::Cube] = cube;
         objects[Figure::Cone2] = cone2;
+        objects[Figure::Floor] = floor;
 
         vk_vertex_shader = load_shader_module("../shaders/cone.vert.spv");
         vk_fragment_shader = load_shader_module("../shaders/cone.frag.spv");
@@ -1936,6 +1975,7 @@ namespace application {
                 {Figure::Cube, "Cube"},
                 {Figure::Cone, "Cone"},
                 {Figure::Cone2, "Cone 2"},
+                {Figure::Floor, "Floor"},
             };
             for (const auto &entry: figure_entries) {
                 const auto it = objects.find(entry.figure);
@@ -2162,22 +2202,20 @@ namespace application {
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Cone);
             mm->model = cone_model;
-            mm->albedo[0] = mm->albedo[1] = mm->albedo[2] = 1.0f;
             mm->shininess = ui_shininess;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
             mm->specularColor[2] = ui_specular_color[2];
-            mm->_padding = 0.0f;
+            mm->_padding1 = 0.0f;
         }
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Cone2);
             mm->model = cone2_model;
-            mm->albedo[0] = mm->albedo[1] = mm->albedo[2] = 1.0f;
             mm->shininess = ui_shininess * 0.7f;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
             mm->specularColor[2] = ui_specular_color[2];
-            mm->_padding = 0.0f;
+            mm->_padding1 = 0.0f;
         }
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Cube);
@@ -2186,7 +2224,16 @@ namespace application {
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
             mm->specularColor[2] = ui_specular_color[2];
-            mm->_padding = 0.0f;
+            mm->_padding1 = 0.0f;
+        }
+        {
+            ModelUniforms *mm = model_uniforms_at(Figure::Floor);
+            mm->model = math::Mat4::identity();
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding1 = 0.0f;
         }
     }
 

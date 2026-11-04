@@ -26,9 +26,8 @@ layout(std140, set=0, binding=0) uniform SceneUniforms {
 
 layout(std140, set=1, binding=0) uniform ModelUniforms {
     mat4 model;         // offset 0
-    vec3 albedo;        // offset 64
-    float shininess;    // offset 76
-    vec3 specularColor; // offset 80
+    float shininess;    // offset 64
+    vec3 specularColor; // offset 80 (vec3 выравнивается по 16)
     float _pad0;        // offset 92
 } model_data;
 

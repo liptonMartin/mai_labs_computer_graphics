@@ -24,11 +24,10 @@ layout(std140, set=0, binding=0) uniform SceneUniforms {
 } scene;
 
 layout(std140, set=1, binding=0) uniform ModelUniforms {
-    mat4 model;
-    vec3 albedo;
-    float shininess;
-    vec3 specularColor;
-    float _pad0;
+    mat4 model;         // offset 0
+    float shininess;    // offset 64
+    vec3 specularColor; // offset 80 (vec3 выравнивается по 16)
+    float _pad0;        // offset 92
 } model_data;
 
 layout(set=1, binding=1) uniform sampler2D albedo_tex;
