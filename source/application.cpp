@@ -89,6 +89,16 @@ namespace application {
 
     static_assert(sizeof(LightVizPushConstants) == 80);
 
+    struct PipelineConsts {
+        uint32_t flags; // offset 0
+        float time; // offset 4
+        float _pad[2]; // offset 8..15 -> размер 16
+    };
+
+    static_assert(sizeof(PipelineConsts) == 16);
+
+    constexpr uint32_t FLAG_FANCY = 1u;
+
     struct Vertex {
         float pos[3];
         float normal[3];
@@ -955,6 +965,10 @@ namespace application {
 
         float ui_specular_color[3] = {1.0f, 0.95f, 0.8f};
         float ui_shininess = 64.0f;
+
+        bool ui_fancy_enabled = false;
+        Figure ui_fancy_figure = Figure::Cone2;
+        float current_time = 0.0f;
     }
 
     bool initialize() {
@@ -1203,10 +1217,17 @@ namespace application {
             vk_scene_descriptor_set_layout,
             vk_model_descriptor_set_layout,
         };
+        const VkPushConstantRange cone_push_range = {
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(PipelineConsts),
+        };
         const VkPipelineLayoutCreateInfo layout_create_info = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 2,
             .pSetLayouts = set_layouts,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &cone_push_range,
         };
         if (vkCreatePipelineLayout(context.device, &layout_create_info, nullptr, &vk_cone_layout) != VK_SUCCESS) {
             std::cerr << "Failed to create pipeline layout!\n";
@@ -1726,6 +1747,8 @@ namespace application {
     void update(const double time) {
         ImGui::ShowDemoWindow();
 
+        current_time = static_cast<float>(time);
+
         static double last_time = 0;
         const auto delta_time = time - last_time;
         last_time = time;
@@ -1872,6 +1895,25 @@ namespace application {
                     }
                     ImGui::EndCombo();
                 }
+            }
+
+            ImGui::Checkbox("Fancy sampling", &ui_fancy_enabled);
+            const char *fancy_preview = "Cone 2";
+            for (const auto &entry: figure_entries) {
+                if (entry.figure == ui_fancy_figure)
+                    fancy_preview = entry.name;
+            }
+            if (ImGui::BeginCombo("Fancy object##fancy_object_combo", fancy_preview)) {
+                for (const auto &entry: figure_entries) {
+                    const bool selected = (entry.figure == ui_fancy_figure);
+                    const std::string item_label = std::string(entry.name) + "##fancy_object_" +
+                                                   std::to_string(static_cast<int>(entry.figure));
+                    if (ImGui::Selectable(item_label.c_str(), selected))
+                        ui_fancy_figure = entry.figure;
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
             }
         }
 
@@ -2150,6 +2192,12 @@ namespace application {
                 1,
                 &dynamic_offset
             );
+
+            PipelineConsts pipeline_consts{};
+            pipeline_consts.flags = (ui_fancy_enabled && figure == ui_fancy_figure) ? FLAG_FANCY : 0u;
+            pipeline_consts.time = current_time;
+            vkCmdPushConstants(fd.command_buffer, vk_cone_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(pipeline_consts), &pipeline_consts);
 
             vkCmdDrawIndexed(fd.command_buffer, object.vk_index_count, 1, 0, 0, 0);
         }

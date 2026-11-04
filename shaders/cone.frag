@@ -33,6 +33,45 @@ layout(std140, set=1, binding=0) uniform ModelUniforms {
 
 layout(set=1, binding=1) uniform sampler2D albedo_tex;
 
+layout(push_constant) uniform PipelineConsts {
+    uint flags;
+    float time;
+} pc;
+
+const uint FLAG_FANCY = 1u;
+
+vec3 sample_albedo() {
+    if ((pc.flags & FLAG_FANCY) == 0u) {
+        return texture(albedo_tex, in_uv).rgb;
+    }
+
+    const float t = pc.time;
+
+    // scrolling texture
+    const vec3 a = texture(albedo_tex, in_uv + vec2(0.1 * t, 0.0)).rgb;
+
+    // rotation and scaling around (0.5, 0.5)
+    const float angle = 0.5 * t;
+    const float s = sin(angle);
+    const float c = cos(angle);
+    const float uv_scale = 1.0 + 0.5 * sin(t);
+    const vec2 p = in_uv - vec2(0.5);
+    const vec2 rotated = vec2(c * p.x - s * p.y, s * p.x + c * p.y) * uv_scale;
+    const vec3 b = texture(albedo_tex, rotated + vec2(0.5)).rgb;
+
+    // blend
+    const vec3 blended = mix(a, b, 0.5 + 0.5 * sin(t));
+
+    // color modulation
+    const vec3 tint = vec3(
+        0.6 + 0.4 * sin(t),
+        0.6 + 0.4 * sin(t + 2.1),
+        0.6 + 0.4 * sin(t + 4.2)
+    );
+
+    return blended * tint;
+}
+
 struct PointLight {
     vec3 position;
     float intensity;
@@ -62,7 +101,7 @@ layout(std430, set=0, binding=2) readonly buffer SpotLights {
 } spotLights;
 
 void main() {
-    const vec3 albedo = texture(albedo_tex, in_uv).rgb;
+    const vec3 albedo = sample_albedo();
     const vec3 N = normalize(in_normal);
     const vec3 V = normalize(scene.cameraPos - in_world_pos);
 
