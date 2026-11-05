@@ -22,6 +22,10 @@ namespace application {
         Cone,
         Cone2,
         Floor,
+        LeftWall,
+        RightWall,
+        FrontWall,
+        BackWall,
     };
 
     struct DirectionalLightUniform {
@@ -735,12 +739,13 @@ namespace application {
         return indexes;
     }
 
-    constexpr float FLOOR_HALF_SIZE = 10.0f; // квадрат 20x20
+    constexpr float HALF_SIZE_ROOM_SURFACE = 10.0f; // квадрат 20x20
     constexpr float FLOOR_Y = -2.5f;
+    constexpr float CEIL_Y = 5.0f;
     constexpr float FLOOR_UV_REPEAT = 4.0f; // UV 0..4, sampler с REPEAT
 
     std::vector<Vertex> make_floor_vertexes() {
-        constexpr float h = FLOOR_HALF_SIZE;
+        constexpr float h = HALF_SIZE_ROOM_SURFACE;
         constexpr float y = FLOOR_Y;
         constexpr float uv = FLOOR_UV_REPEAT;
 
@@ -754,6 +759,25 @@ namespace application {
 
     std::vector<uint32_t> make_floor_indexes() {
         return {0, 2, 1, 0, 3, 2};
+    }
+
+
+    std::vector<Vertex> make_wall_vertexes() {
+        constexpr float h = HALF_SIZE_ROOM_SURFACE;
+        constexpr float floor_y = FLOOR_Y;
+        constexpr float ceil_y = CEIL_Y;
+        constexpr float uv = FLOOR_UV_REPEAT;
+
+        return {
+            Vertex{{-h, floor_y, -h}, {1, 0, 0}, {uv, 0}},
+            Vertex{{-h, floor_y, h}, {1, 0, 0}, {0, 0}},
+            Vertex{{-h, ceil_y, h}, {1, 0, 0}, {0, uv}},
+            Vertex{{-h, ceil_y, -h}, {1, 0, 0}, {uv, uv}},
+        };
+    }
+
+    std::vector<uint32_t> make_wall_indexes() {
+        return {0, 1, 2, 0, 2, 3};
     }
 
     std::vector<Vertex> make_line_cone_vertexes(const int segments) {
@@ -1127,10 +1151,42 @@ namespace application {
                 floor.material_index = i;
         }
 
+        const auto wall_vertexes = make_wall_vertexes();
+        const auto wall_indexes = make_wall_indexes();
+
+        auto left_wall = Object();
+        if (!left_wall.create_vertex_and_index_buffers(context, wall_vertexes, wall_indexes))
+            return false;
+
+        auto right_wall = Object();
+        if (!right_wall.create_vertex_and_index_buffers(context, wall_vertexes, wall_indexes))
+            return false;
+
+        auto front_wall = Object();
+        if (!front_wall.create_vertex_and_index_buffers(context, wall_vertexes, wall_indexes))
+            return false;
+
+        auto back_wall = Object();
+        if (!back_wall.create_vertex_and_index_buffers(context, wall_vertexes, wall_indexes))
+            return false;
+
+        for (uint32_t i = 0; i < materials.size(); ++i) {
+            if (materials[i].name == "Bricks") {
+                left_wall.material_index = i;
+                right_wall.material_index = i;
+                front_wall.material_index = i;
+                back_wall.material_index = i;
+            }
+        }
+
         objects[Figure::Cone] = cone;
         objects[Figure::Cube] = cube;
         objects[Figure::Cone2] = cone2;
         objects[Figure::Floor] = floor;
+        objects[Figure::LeftWall] = left_wall;
+        objects[Figure::RightWall] = right_wall;
+        objects[Figure::FrontWall] = front_wall;
+        objects[Figure::BackWall] = back_wall;
 
         vk_vertex_shader = load_shader_module("../shaders/cone.vert.spv");
         vk_fragment_shader = load_shader_module("../shaders/cone.frag.spv");
@@ -2165,6 +2221,12 @@ namespace application {
         vk_scene_uniform_memory->directional.color[2] = ui_dir_color[2];
         vk_scene_uniform_memory->directional._padding = 0.0f;
 
+        const auto right_wall_model = math::Mat4::rotate_y(std::numbers::pi_v<float>);
+
+        const auto front_wall_model = math::Mat4::rotate_y(-std::numbers::pi_v<float> / 2);
+
+        const auto back_wall_model = math::Mat4::rotate_y(std::numbers::pi_v<float> / 2);
+
         const auto &ctx2 = graphics::internal::context;
 
         {
@@ -2229,6 +2291,42 @@ namespace application {
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Floor);
             mm->model = math::Mat4::identity();
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding1 = 0.0f;
+        }
+        {
+            ModelUniforms *mm = model_uniforms_at(Figure::LeftWall);
+            mm->model = math::Mat4::identity();
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding1 = 0.0f;
+        }
+        {
+            ModelUniforms *mm = model_uniforms_at(Figure::RightWall);
+            mm->model = right_wall_model;
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding1 = 0.0f;
+        }
+        {
+            ModelUniforms *mm = model_uniforms_at(Figure::FrontWall);
+            mm->model = front_wall_model;
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding1 = 0.0f;
+        }
+        {
+            ModelUniforms *mm = model_uniforms_at(Figure::BackWall);
+            mm->model = back_wall_model;
             mm->shininess = ui_shininess;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
