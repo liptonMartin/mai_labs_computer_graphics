@@ -490,7 +490,7 @@ namespace application {
         VkBuffer vk_index_buffer = VK_NULL_HANDLE;
         VmaAllocation vk_index_buffer_allocation = VK_NULL_HANDLE;
 
-        uint32_t material_index = 0;
+        uint32_t material_index = 3;
 
         Object() = default;
 
@@ -2031,7 +2031,6 @@ namespace application {
                 {Figure::Cube, "Cube"},
                 {Figure::Cone, "Cone"},
                 {Figure::Cone2, "Cone 2"},
-                {Figure::Floor, "Floor"},
             };
             for (const auto &entry: figure_entries) {
                 const auto it = objects.find(entry.figure);
@@ -2040,7 +2039,7 @@ namespace application {
 
                 Object &object = it->second;
                 if (object.material_index >= materials.size())
-                    object.material_index = 0;
+                    object.material_index = 3;
 
                 const std::string combo_label = std::string(entry.name) + "##material_combo";
                 if (ImGui::BeginCombo(combo_label.c_str(), materials[object.material_index].name.c_str())) {
