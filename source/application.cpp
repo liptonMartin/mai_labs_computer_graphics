@@ -22,6 +22,7 @@ namespace application {
         Cone,
         Cone2,
         Floor,
+        Ceil,
         LeftWall,
         RightWall,
         FrontWall,
@@ -1146,9 +1147,16 @@ namespace application {
         auto floor = Object();
         if (!floor.create_vertex_and_index_buffers(context, floor_vertexes, floor_indexes))
             return false;
+
+        auto ceil = Object();
+        if (!ceil.create_vertex_and_index_buffers(context, floor_vertexes, floor_indexes))
+            return false;
+
         for (uint32_t i = 0; i < materials.size(); ++i) {
-            if (materials[i].name == "Floor")
+            if (materials[i].name == "Floor") {
                 floor.material_index = i;
+                ceil.material_index = i;
+            }
         }
 
         const auto wall_vertexes = make_wall_vertexes();
@@ -1183,6 +1191,7 @@ namespace application {
         objects[Figure::Cube] = cube;
         objects[Figure::Cone2] = cone2;
         objects[Figure::Floor] = floor;
+        objects[Figure::Ceil] = ceil;
         objects[Figure::LeftWall] = left_wall;
         objects[Figure::RightWall] = right_wall;
         objects[Figure::FrontWall] = front_wall;
@@ -1982,7 +1991,7 @@ namespace application {
         if (ImGui::Button("Add spot light")) {
             SpotLightUniform sl{};
             sl.position[0] = 0.0f;
-            sl.position[1] = 3.0f;
+            sl.position[1] = 2.0f;
             sl.position[2] = 0.0f;
             sl.direction[0] = 0.0f;
             sl.direction[1] = -1.0f;
@@ -2220,6 +2229,8 @@ namespace application {
         vk_scene_uniform_memory->directional.color[2] = ui_dir_color[2];
         vk_scene_uniform_memory->directional._padding = 0.0f;
 
+        const auto ceil_model = math::Mat4::rotate_x(std::numbers::pi_v<float>);
+
         const auto right_wall_model = math::Mat4::rotate_y(std::numbers::pi_v<float>);
 
         const auto front_wall_model = math::Mat4::rotate_y(-std::numbers::pi_v<float> / 2);
@@ -2290,6 +2301,15 @@ namespace application {
         {
             ModelUniforms *mm = model_uniforms_at(Figure::Floor);
             mm->model = math::Mat4::identity();
+            mm->shininess = ui_shininess;
+            mm->specularColor[0] = ui_specular_color[0];
+            mm->specularColor[1] = ui_specular_color[1];
+            mm->specularColor[2] = ui_specular_color[2];
+            mm->_padding1 = 0.0f;
+        }
+        {
+            ModelUniforms *mm = model_uniforms_at(Figure::Ceil);
+            mm->model = ceil_model;
             mm->shininess = ui_shininess;
             mm->specularColor[0] = ui_specular_color[0];
             mm->specularColor[1] = ui_specular_color[1];
