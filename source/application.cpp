@@ -909,6 +909,7 @@ namespace application {
                 "../assets/mat_rings_spec.png", "../assets/mat_rings_emissive.png"
             },
             {"Floor", "../assets/mat_floor.png", "../assets/mat_floor_spec.png", nullptr},
+            {"Wall", "../assets/mat_wall.png", nullptr, nullptr},
         };
         constexpr size_t material_source_count = sizeof(material_sources) / sizeof(material_sources[0]);
         constexpr uint32_t MAX_MATERIALS = 16;
@@ -1179,7 +1180,7 @@ namespace application {
             return false;
 
         for (uint32_t i = 0; i < materials.size(); ++i) {
-            if (materials[i].name == "Bricks") {
+            if (materials[i].name == "Wall") {
                 left_wall.material_index = i;
                 right_wall.material_index = i;
                 front_wall.material_index = i;
